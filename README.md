@@ -161,6 +161,38 @@ price of "images are infrequent". **You cannot have both:** `MM=3080 TIER=max` a
 startup with `GGML_ASSERT(buffer) failed` (`ggml-backend.cpp:188`). Warm re-asks are
 near-instant (2.7 s / 8.1 s) thanks to the KV prefix cache, so keep requests append-only.
 
+## Models on hand, and the context each reaches
+
+All rows are **measured** on this box with the production config: `-ngl 99`, `-sm layer`,
+`-ctk q8_0 -ctv q8_0`, projector on CPU (`--no-mmproj-offload`). Weights live in
+`~/.models` and are never committed.
+
+| file | size | safe max ctx | tok/s at max | split used | what stops it going further |
+|---|---|---|---|---|---|
+| `Qwen3.8-27B-UD-Q3_K_XL.gguf` | 12.24 GiB | **196,608** | 49.7–56 | **18,7** | 204,800 and 212,992 both OOM |
+| `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | **114,688** | 47.2 | 19,6 | 122,880 OOMs on the compute buffer |
+| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 13.27 GiB | **163,840** | 46.6 | 19,6 | 180,224 OOMs — IQ needs ~4.5 GiB non-KV |
+| `mmproj-F16.gguf` | 0.86 GiB | shared by all quants | — | — | put it on CPU (`MM=cpu`) or the 3080 (`MM=3080`) |
+
+**Default profile is Q3_K_XL at 196,608** — the largest of the three and the only one that
+clears 192K. Note the ordering is *not* by file size: IQ4_XS is ~1 GiB smaller than
+Q4_K_XL yet yields 50K more tokens, while Q3_K_XL beats both.
+
+With **f16 KV** instead of q8_0, Q4_K_XL tops out at **49,152** (56K fails) — KV is
+80 KiB/token at f16 versus 37.8 at q8_0.
+
+Not tested, from `sizing.py` — trustworthy only **within** the K-quant family:
+
+| file | size | predicted max ctx |
+|---|---|---|
+| `Q4_K_M` | 15.33 GiB | 142,996 |
+| `Q4_K_S` | 14.30 GiB | 171,583 |
+| `Q5_K_M` / `Q5_K_XL` | 18.41 / 19.44 GiB | 57,515 / 28,928 |
+| `Q2_K_XL`, `IQ3_*` | 9.15–10.18 GiB | 262,144 (model's native max) |
+
+Verify any new quant or size with `./ctx-test.sh <sizes>` / `./iq-ladder.sh <file>` —
+~40 s per boot, and it beats the arithmetic every time we tested it against reality.
+
 ## Gotchas already paid for
 
 1. **A blank line after a trailing `\` truncates an `exec` command**, and `bash -n` will
@@ -205,4 +237,21 @@ Ubuntu 26.04's `nvidia-cuda-toolkit` is **12.4, which cannot target Blackwell** 
 needs ≥12.8), so a source build must take the toolkit from NVIDIA's `wsl-ubuntu` repo.
 CUDA 13.x accepts host GCC 6–16, so 26.04's gcc-15 is fine (no pinning).
 `install-llama-cpp.sh` does it — needs your password — with source at `~/llama.cpp`.
-Then `BIN=$HOME/llama.cpp/build/bin/llama-server start.sh`.
+Then `BIN=$HOME/llama.cpp/build/bin/llama-server ./start.sh`.
+
+## The one-line version
+
+If you have roughly this hardware (a Blackwell card + an older Ampere card, WSL2, ≤16 GB
+RAM) and want a Qwen3.5-arch 27B GGUF with MTP and vision running with no root:
+
+```bash
+curl -LO https://github.com/ggml-org/llama.cpp/releases/download/b11034/llama-b11034-bin-ubuntu-cuda-13.3-x64.tar.gz
+curl -LO https://github.com/ggml-org/llama.cpp/releases/download/b11034/cudart-llama-b11034-bin-ubuntu-cuda-13.3-x64.tar.gz
+mkdir -p llama cudart-libs && tar -xzf llama-b11034-bin-ubuntu-cuda-13.3-x64.tar.gz -C llama --strip-components=1
+tar -xzf cudart-llama-b11034-bin-ubuntu-cuda-13.3-x64.tar.gz -C cudart-libs --strip-components=1
+apt-get download libgomp1 && dpkg-deb -x libgomp1_*.deb libs/      # the one missing .so
+./start.sh                                                        # after editing BIN/M paths
+```
+
+Then read the gotchas above — most of them are things that silently disabled MTP or
+misreported headroom rather than things that fail loudly.

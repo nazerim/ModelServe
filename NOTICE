@@ -1,0 +1,17 @@
+ModelServe — llama.cpp serving toolkit and measurements for a 16 GB + 10 GB GPU pair
+Copyright 2026 nazerim
+
+This repository contains only original scripts and measurements. It bundles NO model
+weights. Anything you download separately stays under ITS OWN licence, including:
+
+  * Qwen3.8 GGUF files (unsloth/Qwen3.8-27B-GGUF, base model Qwen/Qwen3.8-27B) —
+    the GGUF metadata declares `general.license = apache-2.0`; check the upstream
+    model card for the authoritative terms before redistributing derivatives.
+  * llama.cpp / ggml (ggml-org/llama.cpp) — MIT licence.
+  * NVIDIA CUDA runtime libraries redistributed by llama.cpp's `cudart-*` release
+    assets — NVIDIA licence; they are gitignored here and re-downloaded from upstream.
+  * testimg/{Cat,Dog}.jpg from Wikimedia Commons — gitignored, fetched on demand by
+    ./get-testimg.sh, and licensed separately by their Commons pages.
+
+The Apache-2.0 licence in LICENSE applies to the scripts, harnesses and documentation
+in this repository.
