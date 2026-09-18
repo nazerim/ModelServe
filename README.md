@@ -521,19 +521,25 @@ q3/196,608/17.4,7.7 returned worst-free **611 MiB every time** with the desktop 
 and every apparent drift was the display GPU's desktop usage changing between measurements.
 `stability.sh` now records that baseline per round for exactly this reason.
 
-## Persisting the power limits (`-pl` survived a reboot here, but don't count on it)
+## Persisting the power limits (`-pl` has no persistence; the boot task does it)
 
-`nvidia-smi -pl` is documented as having **no persistence** — and yet on this box it survived a
-full reboot: after booting to `uptime 1 min` with the task never registered, the limits still
-read 150 W / 250 W. Treat that as driver-specific luck, not a guarantee (a driver update or a
-device reset may well lose it), and keep the boot task as the deterministic answer. Also note
-**it cannot be set from inside WSL at all
-be set from inside WSL at all** — verified here: `nvidia-smi -pl 150 -i 0` answers
+`nvidia-smi -pl` has **no persistence** — the driver restores defaults (340 W / 300 W) on
+every load, which is why the scheduled task exists. It is installed and working on this box:
+limits read 150 W / 250 W at `uptime 1 min`, applied by the task at boot. An earlier version
+of this section claimed the limits had survived a reboot *without* the task and called it
+driver-specific luck — that was wrong, and its cause is worth recording: `-Status` used
+`Get-ScheduledTask -ErrorAction SilentlyContinue`, and a SYSTEM task is not readable by a
+non-elevated account, so a permissions error was silently rendered as "not registered". Use
+`schtasks.exe /query /tn <name>` and read the message: *"cannot find the file specified"* =
+absent, *"Access is denied"* = present but unreadable unelevated (the control comparison that
+established this is in `Register-NvidiaPowerTask.ps1`).
+
+Setting limits from inside WSL is impossible — verified here: `nvidia-smi -pl 150 -i 0` answers
 `Insufficient Permissions`, and `sudo` is interactive-only. So the limit must be re-applied on
-Windows at boot.
+Windows at boot, which is what the task does.
 
 This box has **`LocalMachine` execution policy = `AllSigned`** (not GPO-enforced:
-`Get-ExecutionPolicy -List` shows MachinePolicy/UserPolicy Undefined), so `\.\script.ps1` is
+`Get-ExecutionPolicy -List` shows MachinePolicy/UserPolicy Undefined), so `.\script.ps1` is
 refused with *"not digitally signed"*. Don't "fix" that by loosening the machine-wide policy —
 `win\install-power-limits.cmd` avoids it entirely: cmd.exe isn't subject to ExecutionPolicy, and
 `-ExecutionPolicy Bypass` sets the **Process** scope, which outranks LocalMachine.

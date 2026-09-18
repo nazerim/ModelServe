@@ -47,7 +47,10 @@ if ($here -like '\\*') {
 }
 
 if ($Remove) {
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    $ErrorActionPreference = 'Continue'
+    $existing = (& schtasks.exe /query /tn $TaskName 2>&1) | Out-String
+    $ErrorActionPreference = 'Stop'
+    if ($existing -notmatch 'cannot find the file specified') {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
         "unregistered: $TaskName"
     } else { "not registered: $TaskName" }
@@ -55,12 +58,35 @@ if ($Remove) {
 }
 
 if ($Status) {
-    $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if (-not $t) { "not registered - run without -Status to install it"; exit 0 }   # a status read is not a failure
-    $t | Select-Object TaskName, State
-    (Get-ScheduledTaskInfo -TaskName $TaskName) | Select-Object LastRunTime, LastTaskResult, NextRunTime
-    & nvidia-smi --query-gpu=index,name,power.limit,power.default_limit --format=csv
-    return
+    # Get-ScheduledTask with -ErrorAction SilentlyContinue is NOT a registration test: a task
+    # created as SYSTEM is invisible to a non-elevated caller, and that access error was being
+    # reported as "not registered" (a confident false negative). schtasks' error text does
+    # distinguish the two cases, so use it: absent -> "cannot find the file specified".
+    # Native stderr + $ErrorActionPreference='Stop' makes PowerShell THROW on any schtasks
+    # error output (so both "absent" and "access denied" aborted the script instead of
+    # being classified). Relax the preference around the call and take the text as data.
+    $ErrorActionPreference = 'Continue'
+    $q = (& schtasks.exe /query /tn $TaskName /fo LIST 2>&1) | Out-String
+    $qcode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+    if ($q -match 'cannot find the file specified') {
+        "not registered - run without -Status to install it"
+        & nvidia-smi --query-gpu=index,name,power.limit,power.default_limit --format=csv
+        exit 0
+    }
+    if ($q -match 'Access is denied') {
+        "registered: YES (but this account cannot read a SYSTEM task without elevation)"
+        "  run this from an ELEVATED prompt for Last Run Time / Next Run Time / result"
+        & nvidia-smi --query-gpu=index,name,power.limit,power.default_limit --format=csv
+        exit 0
+    }
+    if ($qcode -eq 0) {
+        "registered: YES"
+        ($q -split "`n" | Where-Object { $_ -match 'Task Name|Next Run Time|Status|Logon Mode|Last Run Time|Last Result' }) -join "`n"
+        & nvidia-smi --query-gpu=index,name,power.limit,power.default_limit --format=csv
+        exit 0
+    }
+    "could not determine state: $q"; exit 1
 }
 
 if (-not (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
