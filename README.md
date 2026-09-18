@@ -175,7 +175,7 @@ All rows are **measured** on this box with the production config: `-ngl 99`, `-s
 All rows with `-b 1024 -ub 256`, `-ctk/-ctv q8_0`, projector on CPU, `TIER=max` in
 `serve.sh`. Speed at the safe ctx: **56 tok/s** (q3), 52.7 (q4s), 48.4 (q4).
 
-**So there are three options, not two**: context (Q3_K_XL @ 212,992), a 4-bit middle
+**So there are three options, not two**: context (Q3_K_XL @ 208,896 default; 212,992 also ran), a 4-bit middle
 (Q4_K_S @ 163,840 — predicted from the within-family rule and it held), or best quality
 (Q4_K_XL @ 122,880). `IQ4_XS` was deleted: an IQ type buys *less* context than Q4_K_S
 despite being 1 GiB smaller, because codebook dequant needs ~4.5 GiB of scratch vs ~2.6 GiB.
@@ -276,7 +276,7 @@ caught). Expected output row:
 
 | pi id | `Q=` profile | contextWindow |
 |---|---|---|
-| `qwen3.8-27b` | `q3` (Q3_K_XL) | 212,992 |
+| `qwen3.8-27b` | `q3` (Q3_K_XL) | 208,896 |
 | `qwen3.8-27b-4s` | `q4s` (Q4_K_S) | 163,840 |
 | `qwen3.8-27b-4xl` | `q4` (Q4_K_XL) | 122,880 |
 
@@ -298,6 +298,28 @@ Alternative integration: pi has a first-class llama.cpp **router** provider
 `LLAMA_BASE_URL`/`LLAMA_API_KEY`). Not used here because the per-profile tuning
 (`--tensor-split 18,7`, `-b 1024`, `-ctk q8_0`, projector placement) is explicit in
 `serve.sh`, and router mode would need it re-expressed as llama.cpp presets.
+
+## Crash log
+
+**2026-09-18, live test at CTX=212,992** — the Windows-side NVIDIA driver lost both cards.
+`nvidia-smi`: `Unable to determine the device handle for GPU0/GPU1 … Unknown Error`, then
+`No devices were found`. The server log had **no OOM, no CUDA error** — the last normal line
+was routine prompt processing, and `/health` even kept answering afterwards because the HTTP
+thread outlives a dead CUDA context. So: a dead server that still looks alive, and no
+on-device proof of why.
+
+Responses: default backed off 212,992 → **208,896** (4K step, pi `contextWindow` changed in
+lockstep — never let the two drift, over-declaration is the dangerous direction). If it
+recurs, go to **196,608**, which measured 1,008 MiB free vs 508: a 2× safety jump for 6% less
+window. Recovery options, lightest first: `Win+Ctrl+Shift+B` (graphics driver reset) → restart
+`NVDisplay.ContainerLocalSystem` (admin PowerShell) → `wsl --shutdown` and reopen (reliable,
+but kills everything in WSL, including the agent session running inside it).
+`nvidia-smi --reset` is unsupported inside WSL, and `/dev/dxg` + the libcuda shim staying
+intact is normal in this state — it says the failure is host-side, not a missing WSL device.
+
+Honest limit: 508 MiB free was measured **at idle load**, not under the live worst case
+(long prompt + MTP draft + prefix-cache growth + whatever the desktop grabbed). Margins should
+be read under load, and a single post-boot reading is not a safety argument.
 
 ## Live testing
 
