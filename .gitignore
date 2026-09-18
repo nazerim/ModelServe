@@ -22,3 +22,7 @@ __pycache__/
 log-*.txt
 run-*.log
 rerun.tsv
+
+# per-run dumps: overwritten by each run, so never a reliable record.
+# The durable numbers live in README.md and ~/nodes/005-long-context-200k.md
+*.tsv

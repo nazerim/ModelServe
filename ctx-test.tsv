@@ -1,2 +1,0 @@
-ctx	kv	nvidia	status	vram_5070Ti_mib	vram_3080_mib	gen_tps	note
-196608	f16-default	nvidia	FAIL	15629	7531	-	0.55.775.580 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 1657.13 MiB on device 0: cudaMalloc failed: out of
