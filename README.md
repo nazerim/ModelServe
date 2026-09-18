@@ -101,8 +101,17 @@ defaults, but **`min_p` defaults to 0.05** - sending `0.0` disables it, matching
 intended mode. Verified end to end: greedy (`temp=0, top_k=1`) returned identical text twice,
 the spec set returned different text twice, so the params demonstrably reach the sampler.
 
-Note the server still defaults min_p=0.05 for NON-pi clients (its own WebUI, curl). To make
-every client identical, add `--min-p 0` to `serve.sh`'s ARGS.
+The server now launches with **`--min-p 0`** (`MINP=` to override) so non-pi clients -
+the built-in WebUI at `:8000`, curl, any other agent - sample identically to pi instead of
+getting llama.cpp's 0.05 default. Verified end to end: `--min-p 0` present on the process
+command line, and `/props` `default_generation_settings.params.min_p` moved from
+`0.05000000074505806` to `0.0`.
+
+Caveat found while doing that: **`/props` is not uniformly launch-accurate.** It reported
+`n_predict: -1` even though the process carries `-n 32768`, and `speculative.types: "none"`
+while MTP demonstrably runs (draft-acceptance lines in the log). The sampling values
+(temp/top_k/top_p/min_p) did track launch; the other two did not - so don't use `/props` to
+confirm `-n` or `--spec-type`, and don't conclude those flags are broken when it disagrees.
 
 Default resolved config: **Q=q3 · TIER=max (CTX=196,608) · NPRED=32768 · PORT=8000 ·
 SPLIT=18,7 · NGL=99 · KV=q8_0 · MM=cpu**; `PORT`/`HOST`/`MODEL_DIR` come from

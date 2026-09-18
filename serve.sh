@@ -91,6 +91,9 @@ MM="${MM:-cpu}"
 # is sized from, and that buffer - not KV - is what fails first on this pair.
 BATCH="${BATCH:-1024}"
 UBATCH="${UBATCH:-256}"
+# llama.cpp defaults min_p to 0.05, but it is NOT in the GGUF (unlike temp/top_p/top_k), so
+# non-pi clients (the built-in WebUI, curl) would sample differently from pi. 0 = disabled.
+MINP="${MINP:-0}"
 # Auth: pi reads the key from $OMLX_API_KEY (see ~/.pi/agent/models.json), so the server
 # must require the same value. Empty = no auth (fine while bound to loopback).
 API_KEY="${API_KEY-${OMLX_API_KEY:-}}"
@@ -123,6 +126,7 @@ ARGS=(
 [ -n "$SPLIT" ] && ARGS+=(--tensor-split "$SPLIT")
 [ -n "$NGL" ]   && ARGS+=(-ngl "$NGL")
 [ -n "$KV" ]    && ARGS+=(-ctk "$KV" -ctv "$KV")
+ARGS+=(--min-p "$MINP")
 # Auth via ENVIRONMENT, never argv: `--api-key <secret>` is world-readable through ps(1)
 # and /proc/<pid>/cmdline, while llama.cpp also accepts the same value as LLAMA_API_KEY.
 if [ -n "$API_KEY" ]; then export LLAMA_API_KEY="$API_KEY"; fi
@@ -160,7 +164,7 @@ fi
 printf '%s\n' "${ARGS[@]}" | grep -qxF -- "$ALIAS" || { echo "internal error: --alias value missing from ARGS" >&2; exit 3; }
 
 if [ -n "${DRY:-}" ]; then
-  echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM BATCH=$BATCH/$UBATCH ALIAS=$ALIAS AUTH=${API_KEY:+yes}${API_KEY:-no}" | sed 's/AUTH=yes.*/AUTH=yes/'
+  echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM BATCH=$BATCH/$UBATCH MINP=$MINP ALIAS=$ALIAS AUTH=${API_KEY:+yes}${API_KEY:-no}" | sed 's/AUTH=yes.*/AUTH=yes/'
   printf ' %q' "${BIN}" "${ARGS[@]}" "$@"; echo
   exit 0
 fi
