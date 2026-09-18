@@ -10,7 +10,7 @@
 #
 # These ceilings are crash guards, not just conveniences: the driver died twice probing
 # them. q3 is the only profile with a measured under-load number (196,608 -> 471 MiB).
-# q4s is derived from its own 163,840 measurement (120 MiB worst-case = UNSAFE) plus the
+ (120 MiB worst-case = UNSAFE) plus the
 # q3 worst-case slope of ~29.4 KiB/token. q4 has NO under-load data at all.
 #
 #   TIER=small     32,768   low latency, most headroom
@@ -49,7 +49,7 @@ case "$Q" in
   q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="18,7" ;;
   # NOTE: the right split is PROFILE-specific, not global - q4xl at 18,7 left the
   # display GPU 81 MiB free, at 17,8 it had 1,045 MiB, and at 15,10 it failed to boot.
-  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="18,7" ;;
+  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="17,8" ;;
   q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-106496}"; PROFILE_ID="qwen3.8-27b-4xl"; SPLIT_D="17,8" ;;
   *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
 esac

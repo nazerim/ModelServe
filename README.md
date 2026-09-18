@@ -321,6 +321,34 @@ Honest limit: 508 MiB free was measured **at idle**, not under the live worst ca
 (long prompt + MTP draft + prefix-cache growth + whatever the desktop grabbed). Margins should
 be read under load, and a single post-boot reading is not a safety argument.
 
+### Crash 4: the same config that measured SAFE killed the host on its repeat
+
+`q4s` (Q4_K_S) @ **147,456 / SPLIT=17,8**:
+- run 1 — completed the whole load suite, worst-case free **705 MiB** (3080) / 1,617 (5070 Ti), 43–52 tok/s → verdict SAFE
+- run 2 — identical settings, **host reset mid prompt-processing**, no OOM and no CUDA error in the log
+
+That is the decisive control. Nothing about the configuration changed, so the configuration
+is not the variable. I also checked the one other candidate I could measure: pp throughput
+during the crashing runs was 1,182–1,204 and 1,443–1,471 tok/s, while the *surviving* run was
+1,180–1,204 tok/s — so load intensity does not separate them either.
+
+**Conclusion: none of the variables I can see from inside WSL — free VRAM on either card,
+context size, split ratio, prompt-batch size, pp rate — predict these resets.** Context
+"safe levels" are therefore only statements about VRAM margin, and margin has now been shown
+not to be sufficient even at 705 MiB. Stop tuning context to avoid resets; diagnose the host.
+
+Ordered diagnostics for the reset itself (none of them require another context probe):
+1. Windows Event Log / `Get-WinEvent` for `nvlddmkm`, `Display`, `Kernel-Power` around the
+   crash timestamps (three of them are within this session, so they are easy to match).
+2. Clean or roll back the NVIDIA driver (616.92) — Blackwell is new enough that a vendor
+   regression is plausible on a Blackwell + Ampere pair.
+3. Power/thermals under sustained dual-GPU prefill (`nvidia-smi dmon -s pucvmt`), and try a
+   power cap on the 5070 Ti; a transient on simultaneous load fits a PSU/draw problem.
+4. Single-GPU control run (disable/ignore the 3080, e.g. `CUDA_VISIBLE_DEVICES`): if the
+   resets stop with one card, the mix or the board/PSU is implicated, not llama.cpp.
+
+Until then, the configs below are the ones that completed a full load suite at least once.
+
 ### Crashes 2 and 3, and the margin theory is now known to be incomplete
 
 Crash 2 came from my own method error: the scan probed q4s at 167,936 *after* 163,840 had
@@ -350,7 +378,7 @@ carried per profile in `serve.sh`:
 | q4 (Q4_K_XL) | 114,688 | 17,8 | ~800 predicted | **host reset during load** |
 | q4s (Q4_K_S) | 163,840 | 18,7 | 120 MiB | measured UNSAFE (idle said 530) |
 | q4s (Q4_K_S) | 167,936 | 18,7 | — | host reset (probe above a known-unsafe value) |
-| q4s (Q4_K_S) | 147,456 | 18,7 | — | untested |
+| q4s (Q4_K_S) | 147,456 | **17,8** | 705 MiB | run 1 SAFE; **run 2 identical → host reset** |
 
 ## Live testing
 
