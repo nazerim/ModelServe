@@ -4,16 +4,20 @@
 #
 # Models live in ~/.models. Pick a quant with Q= and a size with TIER=:
 #
-#   Q=q3   Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  safe ceiling 180,224 (default)
-#   Q=q4   Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  ceiling 114,688   (higher quality)
+#   Q=q3    Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  -> 212,992 ctx   (default)
+#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 163,840 ctx   (4-bit + long ctx)
+#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 122,880 ctx   (best quality)
 #
-#   TIER=small    32,768   low latency, most headroom
-#   TIER=medium   98,304   comfortable on both quants
-#   TIER=large   180,224   q3; q4 auto-clamps to 114,688
-#   TIER=max    DEFAULT - the quant's safe ceiling: q3 196,608 / q4 114,688
-#               (with SPLIT=18,7 the q3 max keeps 541 MiB on the display GPU; at the
-#               old 19,6 split the same size left only 98 MiB. KV is reserved for the
-#               whole -c regardless of how much you use.)
+#   TIER=small     32,768   low latency, most headroom
+#   TIER=medium    98,304
+#   TIER=large    163,840   the size every quant on hand can take safely
+#   TIER=max    DEFAULT - that quant's measured safe ceiling (see Q= above)
+#
+# "Safe" = >=~400 MiB left on the display GPU. Below ~240 MiB this box aborts, and the
+# free memory is read from nvidia-smi's memory.free (total-used overstates it ~300 MiB).
+# Ceilings assume BATCH=1024 UBATCH=256: shrinking the pp batch from the 2048/512 default
+# costs only ~8% of prompt throughput (1301 -> 1201 tok/s measured) and frees ~570 MiB,
+# which is what turned 204,800 from a hard failure into an easy pass.
 #
 # Output budget defaults to 32K tokens (NPRED). All of these are env-overridable,
 # and DRY=1 prints the resolved command instead of launching it.
@@ -35,16 +39,17 @@ M="${M:-$HOME/.models}"
 Q="${Q:-q3}"
 TIER="${TIER:-max}"   # default = the quant's SAFE ceiling
 case "$Q" in
-  # 196,608 also boots on q3 but leaves the display GPU only 101 MiB free,
-  # which is under this box's abort threshold - so the ceiling here is the SAFE one.
-  q3) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}" ;;
-  q4) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}"; CEIL="${CEIL:-114688}" ;;
-  *)  MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}" ;;     # MODEL= given -> trust it; CEIL= overrides the clamp
+  # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
+  # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
+  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-212992}" ;;
+  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-163840}" ;;
+  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}" ;;
+  *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}" ;;   # MODEL= given -> trust it; CEIL= overrides
 esac
 case "$TIER" in
   small)  CTX_D=32768  ;;
   medium) CTX_D=98304  ;;
-  large)  CTX_D=180224 ;;
+  large)  CTX_D=163840 ;;
   max)    CTX_D="$CEIL" ;;
   *) echo "TIER must be small|medium|large|max" >&2; exit 2 ;;
 esac
@@ -70,6 +75,10 @@ KV="${KV:-q8_0}"               # f16 | q8_0 | q4_0   (q4_0 measured to under-del
 # Where the 0.86 GiB vision projector goes: cpu = +32K tokens of context at 17.5 s/image;
 # 3080 = `-mmdev CUDA1`, GPU speed but caps ctx; cuda0 = SIGABRTs once CUDA0 runs dry.
 MM="${MM:-cpu}"
+# Prompt batch. Keep well below the 2048/512 default: it is what the pp compute buffer
+# is sized from, and that buffer - not KV - is what fails first on this pair.
+BATCH="${BATCH:-1024}"
+UBATCH="${UBATCH:-256}"
 
 # prebuilt tarballs are not self-contained: CUDA runtime libs + libgomp
 export LD_LIBRARY_PATH="$ROOT/llama:$ROOT/cudart-libs:$ROOT/libs/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -86,6 +95,7 @@ ARGS=(
   -sm layer
   -c "$CTX" -np "$NP"
   -n "$NPRED"
+  -b "$BATCH" -ub "$UBATCH"
   --spec-type draft-mtp --spec-draft-n-max 2
   --host "$HOST" --port "$PORT"
   --alias qwen3.8-27b
@@ -103,7 +113,7 @@ case "$MM" in
 esac
 
 if [ -n "${DRY:-}" ]; then
-  echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM"
+  echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM BATCH=$BATCH/$UBATCH"
   printf ' %q' "${BIN}" "${ARGS[@]}" "$@"; echo
   exit 0
 fi

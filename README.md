@@ -104,9 +104,9 @@ values and missing model files are rejected rather than silently falling back, a
 | | |
 |---|---|
 | load → listening | 15.6 s (32K) · ~35 s (96K) |
-| generation **with** MTP | **46–50 tok/s** (acceptance 0.54–0.85, mean draft len ~2.1) |
+| generation **with** MTP | **46–56 tok/s** (acceptance 0.54–0.85, mean draft len ~2.1) |
 | generation **without** MTP | 25.7 tok/s → **MTP ≈ 1.9×**; keep it on |
-| prompt processing | ~515 tok/s → a cold 200K prompt ≈ 6.5 min |
+| prompt processing | **1301 tok/s** at default batch, 1201 at `-b 1024` → 200K cold ≈ 2.8 min |
 | KV cost | **f16 80 · q8_0 37.8 · q4_0 ~23 KiB/token** (measured; only 17/65 blocks hold KV) |
 | vision latency | ~2.5–3.3 s/image on GPU · **~17.5 s/image on CPU** |
 
@@ -164,23 +164,36 @@ All rows are **measured** on this box with the production config: `-ngl 99`, `-s
 `-ctk q8_0 -ctv q8_0`, projector on CPU (`--no-mmproj-offload`). Weights live in
 `~/.models` and are never committed.
 
-| file | size | split | largest ctx that BOOTS | free on 5070 Ti there | usable? |
-|---|---|---|---|---|---|
-| `Qwen3.8-27B-UD-Q3_K_XL.gguf` | 12.24 GiB | **18,7** | **196,608** (6/6 boots, 46–48 tok/s) | **420–441 MiB** | **yes — the default** |
-| ~~`IQ4_XS`~~ *measured then deleted* | 13.27 GiB | 18,7 | 188,416 (44.5 tok/s) | **13 MiB** | no — will abort |
-| ~~`IQ4_XS`~~ | 13.27 GiB | 18,7 | 180,224 (47.7 tok/s) | 132 MiB | marginal |
-| `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | 18,7 | 122,880 (42–48, 3/3 boots) | **109 MiB** | no — will abort |
-| `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | 19,6 | 114,688 (47.2 tok/s) | ~500 MiB | yes, but lower |
-| `mmproj-F16.gguf` | 0.86 GiB | — | shared by all quants | — | keep on CPU (`MM=cpu`) or the 3080 |
+| file | size | split | safe ctx (≥~400 MiB free) | free at safe ctx | max that boots | free there |
+|---|---|---|---|---|---|---|
+| **`Q3_K_XL`** ← default | 12.24 GiB | 18,7 | **212,992** | 508 MiB | 225,280 | 258 MiB |
+| **`Q4_K_S`** | 14.30 GiB | 18,7 | **163,840** | 530 MiB | 184,320 | ~72 MiB |
+| **`Q4_K_XL`** | 16.35 GiB | 18,7 | **122,880** | ~400 MiB (interpolated) | 135,168 | 192 MiB |
+| ~~`IQ4_XS`~~ deleted | 13.27 GiB | 18,7 | — | — | 188,416 | **13 MiB** |
+| `mmproj-F16` | 0.86 GiB | — | on CPU (`MM=cpu`) | — | — | — |
 
-**A boot that succeeds is not a test that passes** — the column that matters is *free*.
-This box aborts below ~240 MiB on the display GPU, so the 188,416 and 122,880 "wins" are
-unusable: retuning the split does squeeze a few more thousand tokens out of the heavier
-quants (correcting an earlier claim here that rebalancing buys safety only), but every one of
-those tokens is bought with slack the Windows desktop will spend first. `Q3_K_XL @ 196,608`
-is simultaneously the largest **and** the safest config, because weights and KV compete for
-the same VRAM — the smallest quant wins on both axes. Past it, 204,800 doesn't even OOM
-cleanly: it puts the driver into `CUDA error: device not ready`.
+All rows with `-b 1024 -ub 256`, `-ctk/-ctv q8_0`, projector on CPU, `TIER=max` in
+`serve.sh`. Speed at the safe ctx: **56 tok/s** (q3), 52.7 (q4s), 48.4 (q4).
+
+**So there are three options, not two**: context (Q3_K_XL @ 212,992), a 4-bit middle
+(Q4_K_S @ 163,840 — predicted from the within-family rule and it held), or best quality
+(Q4_K_XL @ 122,880). `IQ4_XS` was deleted: an IQ type buys *less* context than Q4_K_S
+despite being 1 GiB smaller, because codebook dequant needs ~4.5 GiB of scratch vs ~2.6 GiB.
+
+**The lever that unlocked all of this was the prompt batch, not the split or the KV type.**
+`-b 1024 -ub 256` shrinks the pp compute buffer, which is what actually fails first here:
+at the 2048/512 default, 204,800 died with `CUDA error: device not ready`, and 196,608 left
+441 MiB; with `-b 1024` the same 196,608 leaves **1,008 MiB** and 204,800 boots easily.
+Measured cost: prompt processing 1301 → 1201 tok/s (−7.7%) on a 36,058-token ingest.
+
+**Split is now bracketed, and 18,7 is the optimum**: 20,5/19,6 leave the 5070 Ti dry
+(75–109 MiB); 17,8 and 16,9 fail on **device 1 (the 3080)** instead — the constraint flips.
+Measured at 3 points, so don't re-tune it.
+
+**Correction to earlier numbers in this file:** prompt processing was quoted as ~515 tok/s
+and "a cold 200K prompt ≈ 6.5 min". That came from a 62-token prompt dominated by fixed
+overhead. Measured properly on a 36,058-token prompt it is **1301 tok/s** at the default
+batch (~1201 at `-b 1024`), so a 200K cold ingest is **~2.8 min, not 6.5**.
 
 **Two quants on hand: Q3_K_XL (context) and Q4_K_XL (quality).** Default profile is
 **Q3_K_XL at 196,608** — the largest context available and the only one clearing 192K with
@@ -216,7 +229,10 @@ quality, i.e. possibly a *third* option rather than a strict context-or-quality 
 Untested — hypothesis, not a number. To check: `./get-quant.sh Qwen3.8-27B-UD-Q4_K_S.gguf`
 then `./rerun.sh "Q4_K_S 18,7 171583"`.
 
-Verify any new quant or size with `./rerun.sh "<QUANT> <SPLIT> <CTX>"` — one isolated boot
+`serve.sh` profiles now: `Q=q3|q4s|q4` × `TIER=small|medium|large|max`, with `BATCH`/`UBATCH`
+defaulting to 1024/256. Step a candidate up in 4K increments with an early stop:
+`EXTRA='-b 1024 -ub 256' ./push.sh Q3_K_XL 18,7 208896 4096 225280`, and `./pp-check.sh`
+measures what a batch change costs. Verify anything new with `./rerun.sh "<QUANT> <SPLIT> <CTX>"` — one isolated boot
 per cell, idle VRAM verified first, self-checks the server's reported `n_ctx_slot`, and
 records `memory.free`. `ctx-test.sh` and `iq-ladder.sh` are coarser (~40 s per boot).
 

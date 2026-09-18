@@ -42,7 +42,7 @@ cell() {  # cell <label> <quant> <split> <ctx>
   wait_idle || return 1
   echo "=========== $label   [$q split=$s ctx=$c]"
   MODEL="$M/Qwen3.8-27B-UD-$q.gguf" CTX="$c" SPLIT="$s" KV=q8_0 MM=cpu NGL=99 CEIL=262144 \
-    setsid nohup ./serve.sh > "$log" 2>&1 </dev/null &
+    setsid nohup ./serve.sh ${EXTRA:-} > "$log" 2>&1 </dev/null &
   local ok="" i
   for i in $(seq 1 45); do
     sleep 4
