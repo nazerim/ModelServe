@@ -321,6 +321,37 @@ Honest limit: 508 MiB free was measured **at idle**, not under the live worst ca
 (long prompt + MTP draft + prefix-cache growth + whatever the desktop grabbed). Margins should
 be read under load, and a single post-boot reading is not a safety argument.
 
+### Crashes 2 and 3, and the margin theory is now known to be incomplete
+
+Crash 2 came from my own method error: the scan probed q4s at 167,936 *after* 163,840 had
+measured 120 MiB worst-case (UNSAFE). `safe-scan.sh` is now descending-only and asks
+`serve.sh` what it would actually run, so it cannot override a clamp.
+
+Crash 3 is the important one. `q4` (Q4_K_XL) at 106,496 with `SPLIT=17,8` measured **1,045
+MiB** and completed the whole load suite. Stepping to 114,688 (+8,192 tokens ≈ 241 MiB at the
+measured ~29.4 KiB/token slope) should have left **~800 MiB — double the stated 400 MiB
+floor** — and the driver lost both cards anyway, silently, mid-prefill.
+
+So the ≥400 MiB rule is **necessary but not sufficient**, and probing context cannot find a
+"safe limit" while resets occur at comfortable predicted margins. The recurring host-side GPU
+loss should be treated as its own reliability problem (driver 616.92 on a Blackwell+Ampere
+mix, dual-GPU power/thermal transients during prompt processing, TDR with the display
+attached), not as VRAM tuning. Testing is paused.
+
+What the probing *did* establish: **the correct `--tensor-split` is profile-specific**, now
+carried per profile in `serve.sh`:
+
+| profile | ctx | split | worst-case free | outcome |
+|---|---|---|---|---|
+| q3 (Q3_K_XL) | 196,608 | 18,7 | 471 MiB | SAFE, survived load suite |
+| q4 (Q4_K_XL) | 106,496 | **17,8** | **1,045 MiB** | SAFE, survived load suite |
+| q4 (Q4_K_XL) | 106,496 | 18,7 | 81 MiB | booted, unsafe |
+| q4 (Q4_K_XL) | 106,496 | 15,10 | — | clean boot failure (KV alloc, CUDA1) |
+| q4 (Q4_K_XL) | 114,688 | 17,8 | ~800 predicted | **host reset during load** |
+| q4s (Q4_K_S) | 163,840 | 18,7 | 120 MiB | measured UNSAFE (idle said 530) |
+| q4s (Q4_K_S) | 167,936 | 18,7 | — | host reset (probe above a known-unsafe value) |
+| q4s (Q4_K_S) | 147,456 | 18,7 | — | untested |
+
 ## Live testing
 
 Endpoint: `http://127.0.0.1:8000` — OpenAI-compatible (`/v1/chat/completions`,

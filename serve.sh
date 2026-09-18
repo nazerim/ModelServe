@@ -46,9 +46,11 @@ TIER="${TIER:-max}"   # default = the quant's SAFE ceiling
 case "$Q" in
   # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
   # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
-  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b" ;;
-  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s" ;;
-  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-106496}"; PROFILE_ID="qwen3.8-27b-4xl" ;;
+  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="18,7" ;;
+  # NOTE: the right split is PROFILE-specific, not global - q4xl at 18,7 left the
+  # display GPU 81 MiB free, at 17,8 it had 1,045 MiB, and at 15,10 it failed to boot.
+  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="18,7" ;;
+  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-106496}"; PROFILE_ID="qwen3.8-27b-4xl"; SPLIT_D="17,8" ;;
   *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
 esac
 case "$TIER" in
@@ -69,7 +71,7 @@ fi
 # at CTX=196608: 19,6 also fits but leaves the display GPU 98 MiB, while 18,7 keeps
 # 541 MiB (3080 441) and is slightly faster; 17,8/16,9 overflow the 3080 instead.
 # Use 19,6 for the q4 tier if you prefer more room on the 3080 there.
-SPLIT="${SPLIT-18,7}"
+SPLIT="${SPLIT-${SPLIT_D-18,7}}"
 NP="${NP:-1}"                  # 1 slot = the whole context for one conversation
 PORT="${PORT:-8000}"
 HOST="${HOST:-127.0.0.1}"      # WSL is NAT mode; 127.0.0.1 is invisible to Windows apps
