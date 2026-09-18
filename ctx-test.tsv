@@ -1,0 +1,2 @@
+ctx	kv	nvidia	status	vram_5070Ti_mib	vram_3080_mib	gen_tps	note
+180224	f16-default	nvidia	OK	15420	8679	44.6	mtp_unused=0

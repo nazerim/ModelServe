@@ -1,0 +1,22 @@
+# Vendored runtime — re-download per README (≈1.3 GB, would bloat history forever)
+/llama/
+/cudart-libs/
+/libs/
+/dl/
+/debs/
+
+# Models never belong in the repo (~43 GiB; also see ~/.models)
+/models/
+
+# Real-photo test images: copyright + size. Regenerate with ./get-testimg.sh
+/testimg/
+
+# Runtime output / transient results
+*.log
+getquant.out
+kv-*.json
+__pycache__/
+*.pyc
+
+# transient per-run dumps
+log-*.txt
