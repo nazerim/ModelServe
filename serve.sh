@@ -5,8 +5,8 @@
 # Models live in ~/.models. Pick a quant with Q= and a size with TIER=:
 #
 #   Q=q3    Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  -> 208,896 ctx   (default)
-#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 147,456 ctx   (SPLIT 17,8: 705 MiB)
-#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 106,496 ctx   (SPLIT 17,8: 1,045 MiB)
+#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 155,648 ctx   (SPLIT 17,8: 705 MiB)
+#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 122,880 ctx   (SPLIT 17,8: 1,045 MiB)
 #
 # These ceilings are VRAM-margin guards from measured load tests (worst-case free, sampled
 # while 31K-token prefills and generations run - idle readings misled us twice):
@@ -54,8 +54,8 @@ case "$Q" in
   q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="17.4,7.7" ;;
   # NOTE: the right split is PROFILE-specific, not global - q4xl at 18,7 left the
   # display GPU 81 MiB free, at 17,8 it had 1,045 MiB, and at 15,10 it failed to boot.
-  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="17,8" ;;
-  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-106496}"; PROFILE_ID="qwen3.8-27b-4xl"; SPLIT_D="17,8" ;;
+  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-155648}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="17,8" ;;
+  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}"; PROFILE_ID="qwen3.8-27b-4xl"; SPLIT_D="17,8" ;;
   *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
 esac
 case "$TIER" in

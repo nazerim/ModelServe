@@ -384,6 +384,31 @@ carried per profile in `serve.sh`:
 | q4s (Q4_K_S) | 167,936 | 18,7 | — | host reset (probe above a known-unsafe value) |
 | q4s (Q4_K_S) | 147,456 | **17,8** | 705 MiB | run 1 SAFE; **run 2 identical → host reset** |
 
+### Retested at 150 W on the 3080 — both ceilings moved, and power looks like the variable
+
+Same harness (2 × distinct 31K-token prefills + generations, margin sampled continuously),
+3080 200 W → **150 W**, 5070 Ti 250 W, desktop baseline 1,356 MiB:
+
+| profile | ctx | split | worst-case free | result |
+|---|---|---|---|---|
+| q4s | 147,456 | 17,8 | 705 MiB | SAFE (matches the pre-cap reading) |
+| **q4s** | **155,648** | 17,8 | **523 MiB** | SAFE → new ceiling |
+| q4 | 106,496 | 17,8 | 939 MiB | SAFE |
+| **q4** | **114,688** | 17,8 | **701 MiB** | **now passes** — this is the config that reset the host at 200 W |
+| **q4** | **122,880** | 17,8 | **469 MiB** | SAFE → new ceiling |
+
+The load-bearing observation: at 114,688 the margin is close to what it was on the crashing
+run (~800 predicted vs 701 measured), yet the outcome flipped once the 3080 was capped. So
+the changed variable was **power, not VRAM** — first positive support for the transient/PSU
+hypothesis, but n=1 on that exact config, and crash 4 was an *identical repeat* of a 705 MiB
+SAFE config. Treat these as single-pass results: run `./stability.sh 3` on whichever profile
+gets used for a long session.
+
+Each +8,192 tokens costs ~180–240 MiB, so the next step on either profile would land under
+the 400 MiB floor and was deliberately left unprobed. **The caps are still manual**: the
+persistence task was never registered (`-Status` says `not registered`), so a reboot restores
+340 W / 300 W — and, on the evidence above, plausibly restores the crashes too.
+
 ## The split is a fine-grained, float knob - and it only moves the constraint
 
 `--tensor-split` parses with `std::stof()` per field (comma or slash separated), so
