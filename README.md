@@ -118,6 +118,28 @@ values and missing model files are rejected rather than silently falling back, a
 | **q8_0** | 65536 ✓, **≥73724 SIGABRTs the first image** | **114688 ✓ 47.2 tok/s** · 122880 ✗ |
 | q4_0 | 98304 ✓ ~45 | 196608 ✗ · 245760 ✗ |
 
+### Fractional splits: they work only by luck, because layers move in whole blocks
+
+Tested at q4s/155,648 (`margin-check.py`, desktop baseline 1,290 MiB, 3080@150W):
+
+| split | free 3080 | free 5070 Ti | min |
+|---|---|---|---|
+| `17,8` | 523 | 901 | **523** |
+| `17.3,8.5` | 523 | 899 | 523 - **no change at all** |
+| `18,7` | 1,455 | 179 | 179 |
+
+`--tensor-split` accepts floats, but placement is decided per **whole attention block**
+(~220 MiB of weights for q4s), so a sub-layer nudge moves nothing and one full unit swings
+the display card by ~720 MiB. There is no smooth optimum to dial into: the response is a
+staircase. Fractional values helped q3 (183 -> 611 MiB) only because that particular
+fraction happened to flip a block the integer grid left alone.
+
+Conclusion: **q4s stays `17,8` and q4 stays `17,8`** - both already sit on the best step of
+their staircase, and ceilings stay q4s 155,648 / q4 122,880. Two of my own arithmetic errors
+are worth keeping as a warning: I solved for the equalising split but applied it in the wrong
+direction (adding to `b` instead of subtracting), and I modelled a continuous response where
+the real granularity is one block. Both were caught by measuring, not by reasoning.
+
 ### Lessons from the ~200K hunt
 
 (The per-quant ladder itself now lives in one place: **“Models on hand, and the context
