@@ -7,6 +7,13 @@ argument. This samples nvidia-smi continuously while a large prompt is prefilled
 answer generated, and reports the LOWEST free memory actually seen on each GPU.
 
 Env: PORT (8000), WORDS (filler word count), ROUNDS
+
+KNOWN LIMITATION: the per-round "s wall" figure includes the 400 generated tokens, so it is
+NOT prompt-processing throughput and must not be compared against another run's pp number.
+Authoritative pp comes from the server log:
+    grep "prompt eval time" server.log
+which at 3080=150W / 5070Ti=250W, q3 @196,608, split 17.4,7.7 reported 1,258 tok/s on a
+20,058-token prompt, and 49.0-49.9 tok/s for generation (20.0-20.4 ms/token).
 """
 import json, os, subprocess, threading, time, urllib.request
 
@@ -16,6 +23,7 @@ WORDS = int(os.environ.get("WORDS", "30000"))
 KEY = os.environ.get("OMLX_API_KEY", "")
 NAMES = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
                        capture_output=True, text=True).stdout.split("\n")
+seen_prompts = []
 stop = threading.Event()
 lows = [None, None]
 
@@ -67,8 +75,8 @@ try:
         rng = random.Random(1000 + r)
         filler = " ".join(rng.choice(w) for _ in range(WORDS))
         u, dt = chat(filler + "\n\nIn three sentences, summarise the trade-offs.")
-        print(f"  round {r}: pp={u['prompt_tokens']} tok in {dt:.1f}s, "
-              f"gen={u['completion_tokens']} tok, live min-free so far={lows}")
+        seen_prompts.append(u["prompt_tokens"])
+        print(f"  round {r}: pp={u['prompt_tokens']:,} tok, {dt:.1f}s wall, min-free={lows}")
     # a burst of concurrent-ish long generations, which is closer to agent behaviour
     for r in range(3):
         u, dt = chat("Write 400 words on paged KV caches and prefix reuse, in detail.")
