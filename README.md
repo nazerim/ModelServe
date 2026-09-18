@@ -417,6 +417,45 @@ q3/196,608/17.4,7.7 returned worst-free **611 MiB every time** with the desktop 
 and every apparent drift was the display GPU's desktop usage changing between measurements.
 `stability.sh` now records that baseline per round for exactly this reason.
 
+## Persisting the power limits (they are volatile)
+
+`nvidia-smi -pl` has no persistence: the driver restores defaults on every load, and **it cannot
+be set from inside WSL at all** — verified here: `nvidia-smi -pl 150 -i 0` answers
+`Insufficient Permissions`, and `sudo` is interactive-only. So the limit must be re-applied on
+Windows at boot.
+
+One-time setup, **elevated** PowerShell:
+
+```powershell
+cd \\wsl.localhost\Ubuntu-26.04\home\naz\Projects\ModelServe\win
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\Register-NvidiaPowerTask.ps1                      # 150W 3080 / 250W 5070 Ti
+# .\Register-NvidiaPowerTask.ps1 -Watts3080 170     # change values later
+# .\Register-NvidiaPowerTask.ps1 -Status | -Remove
+```
+
+It registers a **SYSTEM** task at startup (no UAC, no login required) with retry-on-failure, and
+the task calls `Set-NvidiaPowerLimits.ps1`, which:
+
+- **resolves GPUs by name, not index** — `-i 0/1` is assigned at driver enumeration and can swap
+  after an update or hardware change, silently capping the wrong card;
+- retries (12x / 10 s), because `nvidia-smi` can answer before the power-management layer is
+  ready during boot;
+- **exits non-zero unless the read-back matches**, so Task Scheduler retries instead of reporting
+  success against nothing;
+- logs to `%ProgramData%\ModelServe\power-limits.log`.
+
+Verified on this machine in read-only mode: `attempt 1 : NVIDIA GeForce RTX 3080 [idx 0] already
+at 150W (default 340W)` / `RTX 5070 Ti ... already at 250W (default 300W)` → `DONE`, exit 0.
+
+After your next reboot, confirm with
+`nvidia-smi --query-gpu=name,power.limit,power.default_limit --format=csv`.
+
+Alternative if you would rather not have a scheduled task: **RTSS' "Universal power limiter"**
+(installed with MSI Afterburner) applies a limit at driver level and survives reboots, at the
+cost of another always-on component. NVIDIA's own control panel has no per-GPU power-limit
+setting for these cards.
+
 ## Root cause signature found: "GPU is lost" (hardware/PCIe level)
 
 After crash 4, from **Windows** (elevated PowerShell, `nvidia-smi`):
