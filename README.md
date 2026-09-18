@@ -74,9 +74,12 @@ sizing.py                               # calibrated feasibility model
 | `TIER=max` *(default)* | the quant's **safe** ceiling: q3 196,608 / q4 114,688 | |
 
 The safe ceiling depends on the **split**: at `19,6` the q3 max (196,608) leaves the display
-GPU only **98 MiB**, which is under this box's abort threshold; at **`18,7`** the same size
-keeps **541 MiB**. Push further to 204,800 / 212,992 and it fails regardless of split —
-rebalancing buys safety, not capacity. KV is reserved for the whole `-c` regardless of use.
+GPU only **98 MiB**, well under this box's abort threshold; at **`18,7`** the same size keeps
+**420–441 MiB** and booted 6/6. Rebalancing *does* also buy raw capacity for the heavier
+quants (Q4_K_XL 114,688 → 122,880; IQ4_XS 163,840 → 188,416) — but only at **109–13 MiB** of
+slack, i.e. unusable. Past 196,608 it stops failing cleanly: 204,800 puts the driver into
+`CUDA error: device not ready`. KV is reserved for the whole `-c` regardless of how much you
+use, so a bigger `-c` costs VRAM even when an agent compacts long before reaching it.
 
 Default resolved config: **Q=q3 · TIER=max (CTX=196,608) · NPRED=32768 · PORT=8000 ·
 SPLIT=18,7 · NGL=99 · KV=q8_0 · MM=cpu**; `PORT`/`HOST`/`MODEL_DIR` come from
@@ -167,12 +170,23 @@ All rows are **measured** on this box with the production config: `-ngl 99`, `-s
 `-ctk q8_0 -ctv q8_0`, projector on CPU (`--no-mmproj-offload`). Weights live in
 `~/.models` and are never committed.
 
-| file | size | safe max ctx | tok/s at max | split used | what stops it going further |
+| file | size | split | largest ctx that BOOTS | free on 5070 Ti there | usable? |
 |---|---|---|---|---|---|
-| `Qwen3.8-27B-UD-Q3_K_XL.gguf` | 12.24 GiB | **196,608** | 49.7–56 | **18,7** | 204,800 and 212,992 both OOM |
-| `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | **114,688** | 47.2 | 19,6 | 122,880 OOMs on the compute buffer |
-| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 13.27 GiB | **163,840** | 46.6 | 19,6 | 180,224 OOMs — IQ needs ~4.5 GiB non-KV |
-| `mmproj-F16.gguf` | 0.86 GiB | shared by all quants | — | — | put it on CPU (`MM=cpu`) or the 3080 (`MM=3080`) |
+| `Qwen3.8-27B-UD-Q3_K_XL.gguf` | 12.24 GiB | **18,7** | **196,608** (6/6 boots, 46–48 tok/s) | **420–441 MiB** | **yes — the default** |
+| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 13.27 GiB | 18,7 | 188,416 (44.5 tok/s) | **13 MiB** | no — will abort |
+| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 13.27 GiB | 18,7 | 180,224 (47.7 tok/s) | 132 MiB | marginal |
+| `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | 18,7 | 122,880 (42–48, 3/3 boots) | **109 MiB** | no — will abort |
+| `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | 19,6 | 114,688 (47.2 tok/s) | ~500 MiB | yes, but lower |
+| `mmproj-F16.gguf` | 0.86 GiB | — | shared by all quants | — | keep on CPU (`MM=cpu`) or the 3080 |
+
+**A boot that succeeds is not a test that passes** — the column that matters is *free*.
+This box aborts below ~240 MiB on the display GPU, so the 188,416 and 122,880 "wins" are
+unusable: retuning the split does squeeze a few more thousand tokens out of the heavier
+quants (correcting an earlier claim here that rebalancing buys safety only), but every one of
+those tokens is bought with slack the Windows desktop will spend first. `Q3_K_XL @ 196,608`
+is simultaneously the largest **and** the safest config, because weights and KV compete for
+the same VRAM — the smallest quant wins on both axes. Past it, 204,800 doesn't even OOM
+cleanly: it puts the driver into `CUDA error: device not ready`.
 
 **Default profile is Q3_K_XL at 196,608** — the largest of the three and the only one that
 clears 192K. Note the ordering is *not* by file size: IQ4_XS is ~1 GiB smaller than
@@ -190,8 +204,9 @@ Not tested, from `sizing.py` — trustworthy only **within** the K-quant family:
 | `Q5_K_M` / `Q5_K_XL` | 18.41 / 19.44 GiB | 57,515 / 28,928 |
 | `Q2_K_XL`, `IQ3_*` | 9.15–10.18 GiB | 262,144 (model's native max) |
 
-Verify any new quant or size with `./ctx-test.sh <sizes>` / `./iq-ladder.sh <file>` —
-~40 s per boot, and it beats the arithmetic every time we tested it against reality.
+Verify any new quant or size with `./rerun.sh "<QUANT> <SPLIT> <CTX>"` — one isolated boot
+per cell, idle VRAM verified first, self-checks the server's reported `n_ctx_slot`, and
+records `memory.free`. `ctx-test.sh` and `iq-ladder.sh` are coarser (~40 s per boot).
 
 ## Gotchas already paid for
 
