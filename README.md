@@ -266,6 +266,31 @@ Not tested, from `sizing.py` — trustworthy only **within** the K-quant family:
 | `Q5_K_M` / `Q5_K_XL` | 18.41 / 19.44 GiB | 57,515 / 28,928 |
 | `Q2_K_XL`, `IQ3_*` | 9.15–10.18 GiB | 262,144 (model's native max) |
 
+### Stability verdicts (all three profiles)
+
+Margin is necessary but not sufficient here, so each ceiling was re-booted identically
+(`stability.sh`, which records the no-server desktop baseline per round before reporting any
+margin):
+
+| profile | ctx / split | boots | worst-free seen | verdict |
+|---|---|---|---|---|
+| **q3** | 196,608 / `17.4,7.7` | 3/3 (+6/6 earlier) | 471-611 MiB | SAFE, ~49 tok/s, unaffected by the 150 W cap |
+| **q4s** | 155,648 / `17,8` | 5 | **exactly 523 x4**; one 149 MiB outlier | SAFE; re-check margin after a reboot |
+| **q4** | 122,880 / `17,8` | 3/3 | 469-591 MiB (not bit-reproducible) | SAFE, ~33 tok/s |
+
+q4 is the least reproducible of the three, which fits a split sitting near a block boundary
+where ordinary variation flips ~250 MiB of headroom; its realistic floor is the 469 seen in
+the first pass. q4s's single bad reading (149) was the **first boot after a reboot**, while
+its desktop baseline was the *lightest* measured - so that was an early-boot transient, not
+the desktop eating margin, and the cheap mitigation is to start, stop, and restart the server
+once after a reboot (or re-run `margin-check.py`).
+
+**The 150 W cap is not free for the heavy quants.** q4/122,880 measured ~42 tok/s at 200 W
+and ~32-33 at 150 W (-22%), while q3 stayed ~49 either way because its smaller weights leave
+the capped 3080 less to do. But 200 W is the regime in which q4/114,688 reset the host, so
+that 22% buys not losing the machine - if throughput matters more, switch to `q3` rather
+than raising the cap.
+
 ### Other quants that exist (not on hand)
 
 The repo publishes 30 GGUFs. The 4-bit options besides `Q4_K_XL` are `Q4_K_M` 15.33 ·
@@ -496,9 +521,13 @@ q3/196,608/17.4,7.7 returned worst-free **611 MiB every time** with the desktop 
 and every apparent drift was the display GPU's desktop usage changing between measurements.
 `stability.sh` now records that baseline per round for exactly this reason.
 
-## Persisting the power limits (they are volatile)
+## Persisting the power limits (`-pl` survived a reboot here, but don't count on it)
 
-`nvidia-smi -pl` has no persistence: the driver restores defaults on every load, and **it cannot
+`nvidia-smi -pl` is documented as having **no persistence** — and yet on this box it survived a
+full reboot: after booting to `uptime 1 min` with the task never registered, the limits still
+read 150 W / 250 W. Treat that as driver-specific luck, not a guarantee (a driver update or a
+device reset may well lose it), and keep the boot task as the deterministic answer. Also note
+**it cannot be set from inside WSL at all
 be set from inside WSL at all** — verified here: `nvidia-smi -pl 150 -i 0` answers
 `Insufficient Permissions`, and `sudo` is interactive-only. So the limit must be re-applied on
 Windows at boot.
