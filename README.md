@@ -380,6 +380,41 @@ carried per profile in `serve.sh`:
 | q4s (Q4_K_S) | 167,936 | 18,7 | — | host reset (probe above a known-unsafe value) |
 | q4s (Q4_K_S) | 147,456 | **17,8** | 705 MiB | run 1 SAFE; **run 2 identical → host reset** |
 
+## Root cause signature found: "GPU is lost" (hardware/PCIe level)
+
+After crash 4, from **Windows** (elevated PowerShell, `nvidia-smi`):
+
+```
+Unable to determine the device handle for GPU0: 0000:24:00.0: GPU is lost.  Reboot the system to recover this GPU
+1, NVIDIA GeForce RTX 5070 Ti, 300.00 W, 300.00 W, 300.00 W, 34.61 W, 616.92
+```
+
+So the 3080 (PCI 24:00.0) is **quarantined by the driver**, not merely invisible to WSL.
+Two things worth remembering from this:
+
+- **`Get-PnpDevice -Class Display` and `Win32_VideoController` both still reported
+  `Status: OK`.** Those are cached/stale. For GPU health trust `nvidia-smi`'s own words,
+  not PnP `OK`. (I concluded the opposite from the PnP data earlier in this session.)
+- **"GPU is lost" is a hardware/PCIe-level failure**, not an out-of-memory result. That is
+  fully consistent with everything we measured: the identical config both survived a full
+  load suite and killed the host on repeat, and no WSL-visible variable (free VRAM on
+  either card, ctx, split, batch, pp rate) separated the runs. Context tuning was never
+  going to fix this.
+
+Recovery for this state is a **reboot** - `wsl --shutdown` is not enough, the driver has
+parked the device.
+
+Leading hypotheses, in order: (1) PSU/transient overload - a 320 W 3080 plus a 300 W
+5070 Ti both boosting during prompt processing is ~620 W on the two cards alone, and Blackwell
+plus Ampere both produce current spikes well above TDP; (2) PCIe link drop on the 3080 (slot,
+riser/cable, or power-connector daisy-chain); (3) driver 616.92 regression on a mixed-arch pair.
+
+Mitigation to test after reboot, before any further load testing: cap power well below default
+- 3080 -> ~240 W, 5070 Ti -> ~230 W (~470 W combined vs ~620 W). Run from **elevated
+PowerShell** (`nvidia-smi -pl 240 -i <idx>`); `-pl` does not survive a reboot or driver
+reset, so re-apply or script it at logon. Setting it from inside WSL needs root and the WSL
+shim generally refuses `-pl` - untested from this side, so do it on Windows.
+
 ## Live testing
 
 Endpoint: `http://127.0.0.1:8000` — OpenAI-compatible (`/v1/chat/completions`,
