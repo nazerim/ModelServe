@@ -410,6 +410,13 @@ interpolation between two measured splits over-predicted the optimum by ~16%
 **Always record the desktop baseline (`nvidia-smi` with no server running) before comparing
 two splits** - otherwise you are comparing Windows' mood, not your configuration.
 
+**Placement is deterministic; the desktop is the only moving part.** Three identical boots of
+q3/196,608/17.4,7.7 returned worst-free **611 MiB every time** with the desktop pinned at
+1,301 MiB (`stability.sh`). So an earlier claim in this file - that `--tensor-split` "lands
+~500 MiB differently between runs" - was wrong: the config is reproducible to the megabyte,
+and every apparent drift was the display GPU's desktop usage changing between measurements.
+`stability.sh` now records that baseline per round for exactly this reason.
+
 ## Root cause signature found: "GPU is lost" (hardware/PCIe level)
 
 After crash 4, from **Windows** (elevated PowerShell, `nvidia-smi`):
