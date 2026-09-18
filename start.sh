@@ -14,7 +14,17 @@ for i in $(seq 1 60); do
   sleep 3
   h=$(curl -s --max-time 5 "http://127.0.0.1:$PORT/health" 2>/dev/null)
   case "$h" in
-    *'"ok"'*)  echo "ready: $h  (UI http://127.0.0.1:$PORT/)"; exit 0 ;;
+    *'"ok"'*)
+      served=$(curl -s --max-time 5 -H "Authorization: Bearer ${OMLX_API_KEY:-}" \
+                 "http://127.0.0.1:$PORT/v1/models" 2>/dev/null \
+               | python3 -c 'import json,sys;print(", ".join(m["id"] for m in json.load(sys.stdin).get("data",[])))' 2>/dev/null)
+      echo "ready: $h  (UI http://127.0.0.1:$PORT/)"
+      echo "  served as : ${served:-<unreadable - is OMLX_API_KEY set in this shell?>}"
+      echo "  in pi     : /model -> the entry with this exact id (pi sends its own id, which"
+      echo "                       llama.cpp IGNORES - so the entry must match the booted"
+      echo "                       profile or pi will over-declare the context)"
+      [ -z "${OMLX_API_KEY:-}" ] && echo "  WARNING: OMLX_API_KEY unset here; pi will get 401 (server now requires it)."
+      exit 0 ;;
     *health_not_supported*) [ "$i" -gt 6 ] && { echo "ready (health_not_supported): $h"; exit 0; } ;;
   esac
   grep -qiE 'out of memory|failed to allocate|SIGABRT|Segmentation' server.log && break

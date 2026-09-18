@@ -1,0 +1,44 @@
+{
+  "providers": {
+    "omlx": {
+      "baseUrl": "http://127.0.0.1:8000/v1",
+      "api": "openai-completions",
+      "apiKey": "$OMLX_API_KEY",
+      "compat": {
+        "thinkingFormat": "qwen",
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsStore": false
+      },
+      "models": [
+        {
+          "id": "qwen3.8-27b",
+          "name": "Qwen3.8 27B (Q3_K_XL, 208K)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 212992,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        },
+        {
+          "id": "qwen3.8-27b-4s",
+          "name": "Qwen3.8 27B (Q4_K_S, 160K)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 163840,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        },
+        {
+          "id": "qwen3.8-27b-4xl",
+          "name": "Qwen3.8 27B (Q4_K_XL, 120K)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 122880,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

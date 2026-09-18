@@ -41,10 +41,10 @@ TIER="${TIER:-max}"   # default = the quant's SAFE ceiling
 case "$Q" in
   # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
   # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
-  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-212992}" ;;
-  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-163840}" ;;
-  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}" ;;
-  *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}" ;;   # MODEL= given -> trust it; CEIL= overrides
+  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-212992}"; PROFILE_ID="qwen3.8-27b" ;;
+  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-163840}"; PROFILE_ID="qwen3.8-27b-4s" ;;
+  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}"; PROFILE_ID="qwen3.8-27b-4xl" ;;
+  *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
 esac
 case "$TIER" in
   small)  CTX_D=32768  ;;
@@ -79,6 +79,12 @@ MM="${MM:-cpu}"
 # is sized from, and that buffer - not KV - is what fails first on this pair.
 BATCH="${BATCH:-1024}"
 UBATCH="${UBATCH:-256}"
+# Auth: pi reads the key from $OMLX_API_KEY (see ~/.pi/agent/models.json), so the server
+# must require the same value. Empty = no auth (fine while bound to loopback).
+API_KEY="${API_KEY-${OMLX_API_KEY:-}}"
+# pi's model id for this profile, so /v1/models reports which quant is actually live
+# (llama-server ignores the incoming model name, so a mismatch would be silent).
+ALIAS="${ALIAS:-$PROFILE_ID}"
 
 # prebuilt tarballs are not self-contained: CUDA runtime libs + libgomp
 export LD_LIBRARY_PATH="$ROOT/llama:$ROOT/cudart-libs:$ROOT/libs/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -98,13 +104,14 @@ ARGS=(
   -b "$BATCH" -ub "$UBATCH"
   --spec-type draft-mtp --spec-draft-n-max 2
   --host "$HOST" --port "$PORT"
-  --alias qwen3.8-27b
+  --alias "$ALIAS"
 )
 # These must stay OUT of the array: each is conditional, and a stray blank line
 # after a trailing backslash once silently truncated an `exec` command.
 [ -n "$SPLIT" ] && ARGS+=(--tensor-split "$SPLIT")
 [ -n "$NGL" ]   && ARGS+=(-ngl "$NGL")
 [ -n "$KV" ]    && ARGS+=(-ctk "$KV" -ctv "$KV")
+[ -n "$API_KEY" ] && ARGS+=(--api-key "$API_KEY")
 case "$MM" in
   cpu)   ARGS+=(--no-mmproj-offload) ;;
   3080)  ARGS+=(-mmdev CUDA1) ;;
@@ -119,6 +126,7 @@ case "$HOST" in
   127.0.0.1|localhost|::1) : ;;
   *)
     keygiven=0
+    [ -n "$API_KEY" ] && keygiven=1
     for a in "$@"; do case "$a" in --api-key|*--api-key=*) keygiven=1 ;; esac; done
     if [ "$keygiven" = 0 ] && [ -z "${ALLOW_OPEN_NO_AUTH:-}" ]; then
       echo "refusing to bind HOST=$HOST with no --api-key (CORS is '*' by default)." >&2
@@ -128,8 +136,15 @@ case "$HOST" in
     fi ;;
 esac
 
+# ASSERT the assembled command matches intent. A summary that infers state from a variable
+# ("AUTH=yes") once hid the fact that --api-key was never appended. Check the ARGS itself.
+if [ -n "$API_KEY" ] && ! printf '%s\n' "${ARGS[@]}" | grep -qx -- '--api-key'; then
+  echo "internal error: API_KEY set but --api-key not in ARGS" >&2; exit 3
+fi
+printf '%s\n' "${ARGS[@]}" | grep -qxF -- "$ALIAS" || { echo "internal error: --alias value missing from ARGS" >&2; exit 3; }
+
 if [ -n "${DRY:-}" ]; then
-  echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM BATCH=$BATCH/$UBATCH"
+  echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM BATCH=$BATCH/$UBATCH ALIAS=$ALIAS AUTH=${API_KEY:+yes}${API_KEY:-no}" | sed 's/AUTH=yes.*/AUTH=yes/'
   printf ' %q' "${BIN}" "${ARGS[@]}" "$@"; echo
   exit 0
 fi

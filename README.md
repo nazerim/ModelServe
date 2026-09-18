@@ -236,6 +236,46 @@ measures what a batch change costs. Verify anything new with `./rerun.sh "<QUANT
 per cell, idle VRAM verified first, self-checks the server's reported `n_ctx_slot`, and
 records `memory.free`. `ctx-test.sh` and `iq-ladder.sh` are coarser (~40 s per boot).
 
+## Wiring into pi
+
+pi config lives in **`~/.pi/agent/models.json`** (NOT `models-store.json`, which is a
+refreshable cache of built-in catalogs). Copy `pi-models.example.json` there. It reloads
+each time you open `/model` — no restart needed.
+
+Provider `omlx` → `http://127.0.0.1:8000/v1`, `api: openai-completions`,
+`apiKey: "$OMLX_API_KEY"` (pi interpolates `$VAR`; the literal never touches a file), and
+`compat.thinkingFormat: "qwen"` so pi parses llama.cpp's `reasoning_content` as a thinking
+block instead of leaking it as answer text. `supportsDeveloperRole`/`supportsReasoningEffort`
+are false: llama.cpp has no `reasoning_effort`, and the `developer` role is a bad fit here.
+
+**Three entries, because the context window differs per quant profile** — `maxTokens`
+32,768 on all three:
+
+| pi id | `Q=` profile | contextWindow |
+|---|---|---|
+| `qwen3.8-27b` | `q3` (Q3_K_XL) | 212,992 |
+| `qwen3.8-27b-4s` | `q4s` (Q4_K_S) | 163,840 |
+| `qwen3.8-27b-4xl` | `q4` (Q4_K_XL) | 122,880 |
+
+**The mismatch is silent, in one dangerous direction.** Measured: llama.cpp accepts *any*
+`model` string — `some-typo` returns 200 — so pi's id is never validated against the server's
+`--alias`. Under-declaring (4xl entry, q3 server) merely wastes window. **Over-declaring**
+(q3 entry's 212,992 while a 122,880 server runs) means pi won't compact in time and the
+request fails or silently truncates. So: pick the entry matching what you booted. `start.sh`
+prints the served id to make that checkable, and `serve.sh` names the alias per profile.
+
+Auth is now enforced on both ends: the server takes `--api-key` from `$OMLX_API_KEY`
+(verified: no key → 401, wrong key → 401, right key → 200), so **pi must be launched from a
+shell that has it** or every `omlx` model 401s. `serve.sh` refuses an open bind without a key.
+
+To switch profile: `Q=q4s ./start.sh`, then `/model` → the `-4s` entry.
+
+Alternative integration: pi has a first-class llama.cpp **router** provider
+(`docs/llama-cpp.md`: `--models-dir` + no `-m`, then `/llama` to load/unload on demand,
+`LLAMA_BASE_URL`/`LLAMA_API_KEY`). Not used here because the per-profile tuning
+(`--tensor-split 18,7`, `-b 1024`, `-ctk q8_0`, projector placement) is explicit in
+`serve.sh`, and router mode would need it re-expressed as llama.cpp presets.
+
 ## Live testing
 
 Endpoint: `http://127.0.0.1:8000` — OpenAI-compatible (`/v1/chat/completions`,
