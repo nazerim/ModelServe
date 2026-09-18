@@ -5,13 +5,18 @@
 # Models live in ~/.models. Pick a quant with Q= and a size with TIER=:
 #
 #   Q=q3    Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  -> 208,896 ctx   (default)
-#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 147,456 ctx   (DERIVED, not measured)
-#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 106,496 ctx   (CONSERVATIVE placeholder)
+#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 147,456 ctx   (SPLIT 17,8: 705 MiB)
+#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 106,496 ctx   (SPLIT 17,8: 1,045 MiB)
 #
-# These ceilings are crash guards, not just conveniences: the driver died twice probing
-# them. q3 is the only profile with a measured under-load number (196,608 -> 471 MiB).
- (120 MiB worst-case = UNSAFE) plus the
-# q3 worst-case slope of ~29.4 KiB/token. q4 has NO under-load data at all.
+# These ceilings are VRAM-margin guards from measured load tests (worst-case free, sampled
+# while 31K-token prefills and generations run - idle readings misled us twice):
+#   q3  196,608/18,7 -> 471 MiB    q4s 147,456/17,8 -> 705 MiB    q4 106,496/17,8 -> 1,045 MiB
+# The right split is PROFILE-specific: q4 at 18,7 left the display GPU 81 MiB, at 17,8 the
+# constraint moves to the 3080 with 705-1,045 MiB to spare; 15,10 fails to boot at all.
+#
+# WARNING: margin does NOT prevent the host resets. q4s at this exact setting completed the
+# full load suite once and reset the Windows driver on an identical repeat. Treat these as
+# memory-safety ceilings, not as crash immunity.
 #
 #   TIER=small     32,768   low latency, most headroom
 #   TIER=medium    98,304
