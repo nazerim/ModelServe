@@ -644,7 +644,11 @@ hit rate — if that line ever disappears, MTP stopped loading (see gotcha 2).
    left layers on CPU at 128K (14.4 tok/s), so it is not free.
 9. A harness variable once shadowed the `KV` env var and passed `-ctk "-mmdev CUDA1"`, so
    a config ran a bogus cache type and printed a usage blob instead of failing loudly.
-10. Sampling (temp 1.0 / top_k 20 / top_p 0.95) comes from the GGUF — don't override it.
+10. Sampling temp 1.0 / top_k 20 / top_p 0.95 comes from the GGUF — echoing it in pi's
+    `samplingParams` is harmless. **`min_p` is NOT in the GGUF** and defaults to 0.05, so pi
+    must send `min_p: 0.0`. Field names must be llama.cpp's: use `repeat_penalty`, not
+    `repetition_penalty` — unknown keys return 200 and are silently ignored, so a typo is
+    invisible. Verify with `sampling-check.py`.
 11. The loader warns Qwen-VL needs ≥1024 image tokens for grounding → `--image-min-tokens`.
 12. WSL is in **NAT** mode: `--host 127.0.0.1` is invisible to Windows apps. Use
     `HOST=0.0.0.0` plus `--api-key` (CORS is `*` by default).
