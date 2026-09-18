@@ -81,6 +81,29 @@ slack, i.e. unusable. Past 196,608 it stops failing cleanly: 204,800 puts the dr
 `CUDA error: device not ready`. KV is reserved for the whole `-c` regardless of how much you
 use, so a bigger `-c` costs VRAM even when an agent compacts long before reaching it.
 
+### Sampling parameters
+
+pi has a per-model **`samplingParams`** field merged verbatim into every request body - set on
+all three entries to the Qwen thinking-mode values:
+
+```json
+"samplingParams": { "temperature": 1.0, "top_p": 0.95, "top_k": 20,
+                    "min_p": 0.0, "presence_penalty": 0.0, "repeat_penalty": 1.0 }
+```
+
+Field names must be llama.cpp's, not OpenAI's or intuition's - `sampling-check.py` confirms
+the server answers **200 and silently ignores** unrecognised keys (`repetition_penalty`,
+`totally_bogus_key`), so a misspelling is invisible rather than an error. Use **`repeat_penalty`**.
+
+What actually changes vs llama.cpp defaults: `temperature/top_p/top_k` are already read from
+the GGUF (`general.sampling.*`), `presence_penalty` 0.0 and `repeat_penalty` 1.0 are the
+defaults, but **`min_p` defaults to 0.05** - sending `0.0` disables it, matching the model's
+intended mode. Verified end to end: greedy (`temp=0, top_k=1`) returned identical text twice,
+the spec set returned different text twice, so the params demonstrably reach the sampler.
+
+Note the server still defaults min_p=0.05 for NON-pi clients (its own WebUI, curl). To make
+every client identical, add `--min-p 0` to `serve.sh`'s ARGS.
+
 Default resolved config: **Q=q3 · TIER=max (CTX=196,608) · NPRED=32768 · PORT=8000 ·
 SPLIT=18,7 · NGL=99 · KV=q8_0 · MM=cpu**; `PORT`/`HOST`/`MODEL_DIR` come from
 `config.sh` and an env override still wins. Verified green: 52–56 tok/s, MTP
