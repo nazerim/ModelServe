@@ -6,12 +6,13 @@
   "Insufficient Permissions", and sudo is interactive-only here), so this uses Task Scheduler,
   running as SYSTEM at startup - which needs no UAC prompt and no user login.
 
-  Usage, ONE TIME, from an elevated PowerShell:
-      Set-ExecutionPolicy -Scope Process Bypass -Force
-      .\Register-NvidiaPowerTask.ps1
-      .\Register-NvidiaPowerTask.ps1 -Watts3080 170 -Watts5070Ti 260     # change values
-      .\Register-NvidiaPowerTask.ps1 -Remove
-      .\Register-NvidiaPowerTask.ps1 -Status
+  Usage, ONE TIME. Prefer the .cmd wrapper - this box is AllSigned at LocalMachine scope,
+  so a bare .\script.ps1 is refused, while cmd.exe is not subject to ExecutionPolicy:
+      C:\ProgramData\ModelServe\win\install-power-limits.cmd
+      ...\install-power-limits.cmd -Status | -Remove | -Watts3080 170 -Watts5070Ti 260
+
+  Equivalent without the wrapper (Process-scope Bypass outranks LocalMachine):
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Register-NvidiaPowerTask.ps1
 
   Then confirm after your next reboot:
       nvidia-smi --query-gpu=name,power.limit --format=csv
@@ -55,7 +56,7 @@ if ($Remove) {
 
 if ($Status) {
     $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-    if (-not $t) { "not registered"; exit 1 }
+    if (-not $t) { "not registered - run without -Status to install it"; exit 0 }   # a status read is not a failure
     $t | Select-Object TaskName, State
     (Get-ScheduledTaskInfo -TaskName $TaskName) | Select-Object LastRunTime, LastTaskResult, NextRunTime
     & nvidia-smi --query-gpu=index,name,power.limit,power.default_limit --format=csv

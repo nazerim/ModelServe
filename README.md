@@ -424,15 +424,31 @@ be set from inside WSL at all** — verified here: `nvidia-smi -pl 150 -i 0` ans
 `Insufficient Permissions`, and `sudo` is interactive-only. So the limit must be re-applied on
 Windows at boot.
 
-One-time setup, **elevated** PowerShell:
+This box has **`LocalMachine` execution policy = `AllSigned`** (not GPO-enforced:
+`Get-ExecutionPolicy -List` shows MachinePolicy/UserPolicy Undefined), so `\.\script.ps1` is
+refused with *"not digitally signed"*. Don't "fix" that by loosening the machine-wide policy —
+`win\install-power-limits.cmd` avoids it entirely: cmd.exe isn't subject to ExecutionPolicy, and
+`-ExecutionPolicy Bypass` sets the **Process** scope, which outranks LocalMachine.
+
+One-time setup, from an **elevated** prompt (a SYSTEM task requires admin). Use the local copy —
+cmd.exe can't run with a UNC/WSL working directory:
+
+```
+C:\ProgramData\ModelServe\win\install-power-limits.cmd            # 150W 3080 / 250W 5070 Ti
+C:\ProgramData\ModelServe\win\install-power-limits.cmd -Status
+C:\ProgramData\ModelServe\win\install-power-limits.cmd -Remove
+C:\ProgramData\ModelServe\win\install-power-limits.cmd -Watts3080 170 -Watts5070Ti 260
+```
+
+If the `win\` folder isn't there yet, copy it out of WSL first (elevated PowerShell):
 
 ```powershell
-cd \\wsl.localhost\Ubuntu-26.04\home\naz\Projects\ModelServe\win
-Set-ExecutionPolicy -Scope Process Bypass -Force
-.\Register-NvidiaPowerTask.ps1                      # 150W 3080 / 250W 5070 Ti
-# .\Register-NvidiaPowerTask.ps1 -Watts3080 170     # change values later
-# .\Register-NvidiaPowerTask.ps1 -Status | -Remove
+Copy-Item \\wsl.localhost\Ubuntu-26.04\home\naz\Projects\ModelServe\win\* C:\ProgramData\ModelServe\win\ -Force
 ```
+
+The task this registers also carries `-ExecutionPolicy Bypass`, so AllSigned never breaks the
+per-boot re-apply either. Verified here: `-Status` ran through the wrapper and reported cleanly
+with exit 0, and the setter resolved both cards by name under the same bypass.
 
 It registers a **SYSTEM** task at startup (no UAC, no login required) with retry-on-failure, and
 the task calls `Set-NvidiaPowerLimits.ps1`, which:
