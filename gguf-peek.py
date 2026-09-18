@@ -14,8 +14,12 @@ def fetch(path):
     req = urllib.request.Request(url, headers={"Range": "bytes=0-%d" % (HEAD_BYTES - 1)})
     try:
         with urllib.request.urlopen(req, timeout=180) as r, open(tmp, "wb") as o:
-            total = r.headers.get("x-linked-size") or r.headers.get("content-length")
-            o.write(r.read())
+            body = r.read()
+            # the ranged response carries the true object size in Content-Range:
+            # "bytes 0-N/TOTAL". x-linked-size is not always present.
+            cr = r.headers.get("content-range") or ""
+            total = int(cr.rsplit("/", 1)[-1]) if "/" in cr else r.headers.get("x-linked-size")
+            o.write(body)
         return tmp, int(total) if total else None
     except Exception as e:
         print("  FETCH FAILED %s: %s" % (path, str(e)[:90])); return None, None

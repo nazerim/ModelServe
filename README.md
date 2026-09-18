@@ -118,28 +118,22 @@ values and missing model files are rejected rather than silently falling back, a
 | **q8_0** | 65536 ✓, **≥73724 SIGABRTs the first image** | **114688 ✓ 47.2 tok/s** · 122880 ✗ |
 | q4_0 | 98304 ✓ ~45 | 196608 ✗ · 245760 ✗ |
 
-### Reaching ~200K: measured, and the winner is Q3_K_XL — not IQ4_XS
+### Lessons from the ~200K hunt
 
-| quant | GiB | 147,456 | 163,840 | 180,224 | 196,608 | 212,992 | 229,376 |
-|---|---|---|---|---|---|---|---|
-| Q4_K_XL *(original)* | 16.35 | — | — | — | ✗ (max 114,688) | — | — |
-| **Q3_K_XL** | 12.24 | — | — | **OK 44.6** | **OK 56.2** | ✗ | ✗ |
-| **IQ4_XS** | 13.27 | OK 49.2 | OK 46.6 | ✗ | ✗ | — | — |
+(The per-quant ladder itself now lives in one place: **“Models on hand, and the context
+each reaches”** above. An earlier copy of that table stayed here with contended, pre-`18,7`
+numbers and was removed rather than left to contradict it.)
 
-**Default is `Q=q3 TIER=max` = 196,608 ctx on :8000.** Q3_K_XL is the only candidate that
-reaches 192K, and with `SPLIT=18,7` it does so keeping **541 MiB** free on the display GPU
-(the old `19,6` split left 98 MiB).
-
-**The lesson: IQ4_XS is 1 GiB *smaller* yet yields ~32K *fewer* tokens**, because IQ
-codebook types need far larger CUDA dequant scratch (~4.5 GiB non-KV overhead vs ~2.6 GiB
-for K_XL types). "1 GiB saved ≈ 28K tokens" holds only *within* a quant family — the
-pre-test predictions were ~15% optimistic for exactly that reason. Measure with
-`iq-ladder.sh`; don't extrapolate across families.
+**IQ4_XS is 1 GiB *smaller* yet yielded *less* usable context than Q4_K_XL**, because IQ
+codebook types need far larger CUDA dequant scratch (~4.5 GiB non-KV overhead vs ~2.6 GiB for
+K-types). "1 GiB saved ≈ 28K tokens" holds only *within* a quant family — the pre-test
+predictions were ~15% optimistic for exactly that reason, which is why every ceiling in this
+repo is measured by booting, not extrapolated.
 
 Vision is not the lever and neither is KV quantisation: `-mmdev CUDA1` (projector on the
-3080) gives GPU-speed images but caps at 98304 with 236 MiB spare, and q4_0 KV measured
-**fail** at 192K despite theory. `--tensor-split 16,9` cannot rescue 192K either — it just
-moves the OOM onto the 3080.
+3080) gives GPU-speed images but caps at 98,304, and q4_0 KV measured **fail** at 192K despite
+theory. `--tensor-split 16,9` cannot rescue 196,608 either — it just moves the OOM onto the
+3080. So the practical choice is **context → Q3_K_XL** or **quality → Q4_K_XL**.
 
 ### KV quantisation quality (q8_0 vs q4_0), 60,136-token prompt
 
@@ -173,8 +167,8 @@ All rows are **measured** on this box with the production config: `-ngl 99`, `-s
 | file | size | split | largest ctx that BOOTS | free on 5070 Ti there | usable? |
 |---|---|---|---|---|---|
 | `Qwen3.8-27B-UD-Q3_K_XL.gguf` | 12.24 GiB | **18,7** | **196,608** (6/6 boots, 46–48 tok/s) | **420–441 MiB** | **yes — the default** |
-| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 13.27 GiB | 18,7 | 188,416 (44.5 tok/s) | **13 MiB** | no — will abort |
-| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 13.27 GiB | 18,7 | 180,224 (47.7 tok/s) | 132 MiB | marginal |
+| ~~`IQ4_XS`~~ *measured then deleted* | 13.27 GiB | 18,7 | 188,416 (44.5 tok/s) | **13 MiB** | no — will abort |
+| ~~`IQ4_XS`~~ | 13.27 GiB | 18,7 | 180,224 (47.7 tok/s) | 132 MiB | marginal |
 | `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | 18,7 | 122,880 (42–48, 3/3 boots) | **109 MiB** | no — will abort |
 | `Qwen3.8-27B-UD-Q4_K_XL.gguf` | 16.35 GiB | 19,6 | 114,688 (47.2 tok/s) | ~500 MiB | yes, but lower |
 | `mmproj-F16.gguf` | 0.86 GiB | — | shared by all quants | — | keep on CPU (`MM=cpu`) or the 3080 |
@@ -188,8 +182,9 @@ is simultaneously the largest **and** the safest config, because weights and KV 
 the same VRAM — the smallest quant wins on both axes. Past it, 204,800 doesn't even OOM
 cleanly: it puts the driver into `CUDA error: device not ready`.
 
-**Default profile is Q3_K_XL at 196,608** — the largest of the three and the only one that
-clears 192K. Note the ordering is *not* by file size: IQ4_XS is ~1 GiB smaller than
+**Two quants on hand: Q3_K_XL (context) and Q4_K_XL (quality).** Default profile is
+**Q3_K_XL at 196,608** — the largest context available and the only one clearing 192K with
+safe slack. Note the ordering is *not* by file size: IQ4_XS is ~1 GiB smaller than
 Q4_K_XL yet yields 50K more tokens, while Q3_K_XL beats both.
 
 With **f16 KV** instead of q8_0, Q4_K_XL tops out at **49,152** (56K fails) — KV is
@@ -203,6 +198,23 @@ Not tested, from `sizing.py` — trustworthy only **within** the K-quant family:
 | `Q4_K_S` | 14.30 GiB | 171,583 |
 | `Q5_K_M` / `Q5_K_XL` | 18.41 / 19.44 GiB | 57,515 / 28,928 |
 | `Q2_K_XL`, `IQ3_*` | 9.15–10.18 GiB | 262,144 (model's native max) |
+
+### Other quants that exist (not on hand)
+
+The repo publishes 30 GGUFs. The 4-bit options besides `Q4_K_XL` are `Q4_K_M` 15.33 ·
+`Q4_0` 14.95 · `Q4_K_S` **14.30** · `Q4_1` 16.34 GiB, and `gguf-peek.py` confirms
+**every one already carries the MTP head in-file** (`blk.64.nextn.*`, 17 KV blocks) — as do
+the Q3/Q5/Q6/Q8 quants. There is also a separate `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` sidecar
+(1.28 GiB) but it is **not needed**, and using it would spend 1.28 GiB of VRAM that buys
+~35K more tokens if used for KV instead.
+
+`IQ4_XS` was downloaded, measured, and deleted: at 4-bit it gave *less* usable context than
+`Q4_K_XL` (13–132 MiB of slack — see the table above). **`Q4_K_S` (14.30 GiB) is the
+untested candidate worth knowing about** — same UD dynamic K-family as `Q4_K_XL` but 2 GiB
+lighter, so the within-family rule of thumb (~28K tokens per GiB) puts it near ~170K at 4-bit
+quality, i.e. possibly a *third* option rather than a strict context-or-quality choice.
+Untested — hypothesis, not a number. To check: `./get-quant.sh Qwen3.8-27B-UD-Q4_K_S.gguf`
+then `./rerun.sh "Q4_K_S 18,7 171583"`.
 
 Verify any new quant or size with `./rerun.sh "<QUANT> <SPLIT> <CTX>"` — one isolated boot
 per cell, idle VRAM verified first, self-checks the server's reported `n_ctx_slot`, and
