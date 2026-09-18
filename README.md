@@ -371,7 +371,11 @@ carried per profile in `serve.sh`:
 
 | profile | ctx | split | worst-case free | outcome |
 |---|---|---|---|---|
-| q3 (Q3_K_XL) | 196,608 | 18,7 | 471 MiB | SAFE, survived load suite |
+| q3 (Q3_K_XL) | 196,608 | 18,7 | 183-471 MiB (desktop-dependent) | marginal |
+| q3 (Q3_K_XL) | 196,608 | **17.4,7.7** | **611 MiB** | SAFE - now the default |
+| q3 (Q3_K_XL) | 196,608 | 17,8 | 445 MiB | SAFE-ish, ~10% faster than 17.4,7.7 |
+| q3 (Q3_K_XL) | 196,608 | 16.6,8.4 | 275 MiB | constraint transferred to the 3080 |
+| q3 (Q3_K_XL) | 196,608 | 16,9 / 58,42 | - | clean boot failure on the 3080 |
 | q4 (Q4_K_XL) | 106,496 | **17,8** | **1,045 MiB** | SAFE, survived load suite |
 | q4 (Q4_K_XL) | 106,496 | 18,7 | 81 MiB | booted, unsafe |
 | q4 (Q4_K_XL) | 106,496 | 15,10 | — | clean boot failure (KV alloc, CUDA1) |
@@ -379,6 +383,32 @@ carried per profile in `serve.sh`:
 | q4s (Q4_K_S) | 163,840 | 18,7 | 120 MiB | measured UNSAFE (idle said 530) |
 | q4s (Q4_K_S) | 167,936 | 18,7 | — | host reset (probe above a known-unsafe value) |
 | q4s (Q4_K_S) | 147,456 | **17,8** | 705 MiB | run 1 SAFE; **run 2 identical → host reset** |
+
+## The split is a fine-grained, float knob - and it only moves the constraint
+
+`--tensor-split` parses with `std::stof()` per field (comma or slash separated), so
+`17.4,7.7` and even `58,42` are valid; values are treated as a budget and normalized. The
+catch, measured at q3/196,608 with the desktop held constant at 1,369 MiB:
+
+| split | 5070 Ti share | free 3080 | free 5070 Ti | min |
+|---|---|---|---|---|
+| 18,7 | 72.0% | 1,345 | 183 | 183 |
+| 17.4,7.7 | 69.3% | 611 | 898 | **611** |
+| 17,8 | 68.0% | 445 | 990 | 445 |
+| 16.6,8.4 | 66.4% | 275 | 1,142 | 275 |
+| 16,9 | 64.0% | boot fails: KV alloc on 3080 | | |
+| 58,42 | 58.0% | boot fails: pp compute buffers | | |
+
+Shifting work onto the display-free 3080 raises the 5070 Ti's margin but eats the 3080's, so
+the best `min` sits where the two curves cross - found here at ~69.3%, i.e. `17.4,7.7`.
+Two caveats: the crossing point moves with **whatever the desktop is holding at boot**
+(the 18,7 row read 471 MiB once and 183 MiB later, same config), and a linear
+interpolation between two measured splits over-predicted the optimum by ~16%
+(730 predicted vs 611 measured). Cost of the rebalance: ~44 vs ~53 tok/s, because the
+3080 is now doing more work at its 200 W cap.
+
+**Always record the desktop baseline (`nvidia-smi` with no server running) before comparing
+two splits** - otherwise you are comparing Windows' mood, not your configuration.
 
 ## Root cause signature found: "GPU is lost" (hardware/PCIe level)
 

@@ -51,7 +51,7 @@ TIER="${TIER:-max}"   # default = the quant's SAFE ceiling
 case "$Q" in
   # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
   # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
-  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="18,7" ;;
+  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="17.4,7.7" ;;
   # NOTE: the right split is PROFILE-specific, not global - q4xl at 18,7 left the
   # display GPU 81 MiB free, at 17,8 it had 1,045 MiB, and at 15,10 it failed to boot.
   q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="17,8" ;;
