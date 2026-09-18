@@ -5,8 +5,13 @@
 # Models live in ~/.models. Pick a quant with Q= and a size with TIER=:
 #
 #   Q=q3    Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  -> 208,896 ctx   (default)
-#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 163,840 ctx   (4-bit + long ctx)
-#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 122,880 ctx   (best quality)
+#   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 147,456 ctx   (DERIVED, not measured)
+#   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 106,496 ctx   (CONSERVATIVE placeholder)
+#
+# These ceilings are crash guards, not just conveniences: the driver died twice probing
+# them. q3 is the only profile with a measured under-load number (196,608 -> 471 MiB).
+# q4s is derived from its own 163,840 measurement (120 MiB worst-case = UNSAFE) plus the
+# q3 worst-case slope of ~29.4 KiB/token. q4 has NO under-load data at all.
 #
 #   TIER=small     32,768   low latency, most headroom
 #   TIER=medium    98,304
@@ -42,8 +47,8 @@ case "$Q" in
   # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
   # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
   q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b" ;;
-  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-163840}"; PROFILE_ID="qwen3.8-27b-4s" ;;
-  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}"; PROFILE_ID="qwen3.8-27b-4xl" ;;
+  q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-147456}"; PROFILE_ID="qwen3.8-27b-4s" ;;
+  q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-106496}"; PROFILE_ID="qwen3.8-27b-4xl" ;;
   *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
 esac
 case "$TIER" in
@@ -111,7 +116,9 @@ ARGS=(
 [ -n "$SPLIT" ] && ARGS+=(--tensor-split "$SPLIT")
 [ -n "$NGL" ]   && ARGS+=(-ngl "$NGL")
 [ -n "$KV" ]    && ARGS+=(-ctk "$KV" -ctv "$KV")
-[ -n "$API_KEY" ] && ARGS+=(--api-key "$API_KEY")
+# Auth via ENVIRONMENT, never argv: `--api-key <secret>` is world-readable through ps(1)
+# and /proc/<pid>/cmdline, while llama.cpp also accepts the same value as LLAMA_API_KEY.
+if [ -n "$API_KEY" ]; then export LLAMA_API_KEY="$API_KEY"; fi
 case "$MM" in
   cpu)   ARGS+=(--no-mmproj-offload) ;;
   3080)  ARGS+=(-mmdev CUDA1) ;;
@@ -138,8 +145,10 @@ esac
 
 # ASSERT the assembled command matches intent. A summary that infers state from a variable
 # ("AUTH=yes") once hid the fact that --api-key was never appended. Check the ARGS itself.
-if [ -n "$API_KEY" ] && ! printf '%s\n' "${ARGS[@]}" | grep -qx -- '--api-key'; then
-  echo "internal error: API_KEY set but --api-key not in ARGS" >&2; exit 3
+# Auth must be active without the secret appearing in the assembled argv.
+if [ -n "$API_KEY" ]; then
+  printf '%s\n' "${ARGS[@]}" | grep -qx -- '--api-key' && { echo "internal error: --api-key must not be in argv" >&2; exit 3; }
+  [ "${LLAMA_API_KEY:-}" = "$API_KEY" ] || { echo "internal error: API_KEY set but LLAMA_API_KEY not exported" >&2; exit 3; }
 fi
 printf '%s\n' "${ARGS[@]}" | grep -qxF -- "$ALIAS" || { echo "internal error: --alias value missing from ARGS" >&2; exit 3; }
 
