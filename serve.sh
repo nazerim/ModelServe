@@ -41,7 +41,7 @@ TIER="${TIER:-max}"   # default = the quant's SAFE ceiling
 case "$Q" in
   # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
   # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
-  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-208896}"; PROFILE_ID="qwen3.8-27b" ;;
+  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b" ;;
   q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-163840}"; PROFILE_ID="qwen3.8-27b-4s" ;;
   q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}"; PROFILE_ID="qwen3.8-27b-4xl" ;;
   *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
