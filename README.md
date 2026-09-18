@@ -236,6 +236,43 @@ measures what a batch change costs. Verify anything new with `./rerun.sh "<QUANT
 per cell, idle VRAM verified first, self-checks the server's reported `n_ctx_slot`, and
 records `memory.free`. `ctx-test.sh` and `iq-ladder.sh` are coarser (~40 s per boot).
 
+## Live testing
+
+Endpoint: `http://127.0.0.1:8000` — OpenAI-compatible (`/v1/chat/completions`,
+`/v1/models`, `/health`, `/props`, `/metrics`), built-in chat UI with image upload at `/`.
+Model name as advertised: **`qwen3.8-27b`** (`--alias`), capabilities
+`completion, multimodal`.
+
+| thing | what to expect |
+|---|---|
+| decode | ~50 tok/s (46–56, MTP-dependent) |
+| cold 200K ingest | ~2.8 min (1301 tok/s pp at default batch, ~1201 at `-b 1024`) |
+| KV prefix cache | works — keep requests **append-only**; a changed system prompt or `enable_thinking` flip forces a full re-prefill (measured 9 s warm vs 167 s cold) |
+| one full-res photo, `MM=cpu` | **~3 min** (173–183 s). Small images ~20 s. GPU (`MM=3080`) is 2.5–11 s but caps ctx at 98,304 |
+| thinking | on by default; a small `max_tokens` returns `content: ""` with the answer inside `reasoning_content` |
+| sampling | temp 1.0 / top_k 20 / top_p 0.95 come from the GGUF |
+
+**Don't raise `-np` casually.** Each slot reserves its own KV, so parallelism costs both
+window and safety margin at CTX=212,992:
+
+| `-np` | per-slot window | free on 5070 Ti | verdict |
+|---|---|---|---|
+| **1** (default) | 212,992 | **418 MiB** | recommended |
+| 2 | 106,496 | 290 MiB | OK for two clients, halves the window |
+| 4 | 53,248 | **31 MiB** | avoid — below this box's abort threshold |
+
+If you need real concurrency, prefer running the 3080 as a second instance
+(`SPLIT=1,0 -np 1` won't work; use two processes with `CUDA_VISIBLE_DEVICES`) over
+multiplexing slots at 31 MiB.
+
+**Reaching it from Windows** (WSL is in NAT mode, so `127.0.0.1` inside WSL is invisible to
+Windows apps): `HOST=0.0.0.0 ./start.sh --api-key <key>`. `serve.sh` now **refuses** an open
+bind with no key (llama-server's own CORS-is-`*` warning), because an unauthenticated model
+endpoint on the LAN is easy to forget about. `ALLOW_OPEN_NO_AUTH=1` overrides if you really mean it.
+
+Watch it live: `tail -f server.log`, and `grep "draft acceptance" server.log | tail` for MTP
+hit rate — if that line ever disappears, MTP stopped loading (see gotcha 2).
+
 ## Gotchas already paid for
 
 1. **A blank line after a trailing `\` truncates an `exec` command**, and `bash -n` will

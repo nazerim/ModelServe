@@ -112,6 +112,22 @@ case "$MM" in
   *) echo "MM must be cpu|3080|cuda0" >&2; exit 2 ;;
 esac
 
+# Live-testing guard: WSL here is in NAT mode, so reaching the server from Windows
+# means HOST=0.0.0.0 - which also exposes an unauthenticated, CORS-open endpoint to the
+# LAN (llama-server warns about exactly this at startup). Refuse unless a key is given.
+case "$HOST" in
+  127.0.0.1|localhost|::1) : ;;
+  *)
+    keygiven=0
+    for a in "$@"; do case "$a" in --api-key|*--api-key=*) keygiven=1 ;; esac; done
+    if [ "$keygiven" = 0 ] && [ -z "${ALLOW_OPEN_NO_AUTH:-}" ]; then
+      echo "refusing to bind HOST=$HOST with no --api-key (CORS is '*' by default)." >&2
+      echo "  local-only: keep HOST=127.0.0.1 and use wslhost/ports proxying, or" >&2
+      echo "  pass:  ./serve.sh --api-key <key>     ...or accept the risk: ALLOW_OPEN_NO_AUTH=1" >&2
+      exit 2
+    fi ;;
+esac
+
 if [ -n "${DRY:-}" ]; then
   echo "Q=$Q TIER=$TIER -> CTX=$CTX NPRED=$NPRED SPLIT=$SPLIT NGL='${NGL}' KV='$KV MM=$MM BATCH=$BATCH/$UBATCH"
   printf ' %q' "${BIN}" "${ARGS[@]}" "$@"; echo

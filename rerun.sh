@@ -24,14 +24,23 @@ freeof() {   # freeof <nvidia-smi index 1-based>  -> MiB or ERR
 
 
 wait_idle() {   # block until both GPUs are back at baseline, or say so
-  for _ in $(seq 1 20); do
+  local tries=0 u3080 u5070
+  while :; do
     u3080=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sed -n 1p)
     u5070=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sed -n 2p)
-    [ "$u3080" -le "$BASE_3080" ] && [ "$u5070" -le "$BASE_5070" ] && return 0
-    sleep 3
+    if [ "${u3080:-99999}" -le "$BASE_3080" ] && [ "${u5070:-99999}" -le "$BASE_5070" ]; then return 0; fi
+    # a leftover server from a previous cell is the usual cause, and it silently
+    # poisons the next measurement (it did once already) - so kill and retry, loudly
+    if [ "$tries" = 3 ]; then
+      pkill -9 -f 'llama[-]server' 2>/dev/null
+    elif [ "$tries" = 7 ]; then
+      echo "    !! still not idle after kill+retry (3080=${u3080} 5070Ti=${u5070}) - results below are UNTRUSTWORTHY"
+      return 1
+    fi
+    [ "$tries" = 2 ] && echo "    note: VRAM not idle, something is still holding it - killing stragglers"
+    pkill -f 'llama[-]server' 2>/dev/null
+    tries=$(( tries + 1 )); sleep 3
   done
-  echo "    !! not idle (3080=${u3080} 5070Ti=${u5070}) - results below are UNTRUSTWORTHY"
-  return 1
 }
 
 cell() {  # cell <label> <quant> <split> <ctx>
@@ -41,7 +50,7 @@ cell() {  # cell <label> <quant> <split> <ctx>
   pkill -f 'llama[-]server' 2>/dev/null
   wait_idle || return 1
   echo "=========== $label   [$q split=$s ctx=$c]"
-  MODEL="$M/Qwen3.8-27B-UD-$q.gguf" CTX="$c" SPLIT="$s" KV=q8_0 MM=cpu NGL=99 CEIL=262144 \
+  MODEL="$M/Qwen3.8-27B-UD-$q.gguf" CTX="$c" SPLIT="$s" KV=q8_0 MM=cpu NGL=99 CEIL=262144 NP="${NP:-1}" \
     setsid nohup ./serve.sh ${EXTRA:-} > "$log" 2>&1 </dev/null &
   local ok="" i
   for i in $(seq 1 45); do
@@ -49,11 +58,13 @@ cell() {  # cell <label> <quant> <split> <ctx>
     curl -sS --max-time 5 http://127.0.0.1:8000/health 2>/dev/null | grep -q '"ok"' && { ok=1; break; }
     grep -qiE 'out of memory|failed to allocate' "$log" && break
   done
-  # SELF-CHECK: the boot must report the context we asked for, or the harness is lying
+  # SELF-CHECK: the boot must report the context we asked for, or the harness is lying.
+  # With -np N the pool is shared, so each slot legitimately reports CTX/N.
   local got_ctx; got_ctx=$(grep -oE 'n_ctx_slot = [0-9]+' "$log" | tail -1 | grep -oE '[0-9]+')
+  local want_slot=$(( c / ${NP:-1} ))
   local mtp; mtp=$(grep -c 'unused tensor blk.64' "$log")
-  if [ -n "$ok" ] && [ "${got_ctx:-}" != "$c" ]; then
-    echo "  MISMATCH: asked CTX=$c but server reports n_ctx_slot=${got_ctx:-?} - harness bug, not a result"
+  if [ -n "$ok" ] && [ "${got_ctx:-}" != "$want_slot" ]; then
+    echo "  MISMATCH: asked CTX=$c (NP=${NP:-1} -> want $want_slot/slot) but server reports n_ctx_slot=${got_ctx:-?}"
     printf '%s\t%s\t%s\t%s\tMISMATCH\t-\t-\t-\t-\tgot=%s\n' "$label" "$q" "$s" "$c" "${got_ctx:-none}" >> "$OUT"
     pkill -f 'llama[-]server' 2>/dev/null; sleep 5; return 0
   fi
