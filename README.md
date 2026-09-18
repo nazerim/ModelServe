@@ -289,7 +289,7 @@ prints the served id to make that checkable, and `serve.sh` names the alias per 
 
 Auth is now enforced on both ends: the server takes `--api-key` from `$OMLX_API_KEY`
 (verified: no key → 401, wrong key → 401, right key → 200), so **pi must be launched from a
-shell that has it** or every `omlx` model 401s. `serve.sh` refuses an open bind without a key.
+shell that has it** or every `llama.local` model 401s. `serve.sh` refuses an open bind without a key.
 
 To switch profile: `Q=q4s ./start.sh`, then `/model` → the `-4s` entry.
 
