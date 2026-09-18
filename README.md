@@ -242,11 +242,34 @@ pi config lives in **`~/.pi/agent/models.json`** (NOT `models-store.json`, which
 refreshable cache of built-in catalogs). Copy `pi-models.example.json` there. It reloads
 each time you open `/model` — no restart needed.
 
-Provider `omlx` → `http://127.0.0.1:8000/v1`, `api: openai-completions`,
+Provider **`llama.local`** → `http://127.0.0.1:8000/v1`, `api: openai-completions`,
 `apiKey: "$OMLX_API_KEY"` (pi interpolates `$VAR`; the literal never touches a file), and
 `compat.thinkingFormat: "qwen"` so pi parses llama.cpp's `reasoning_content` as a thinking
 block instead of leaking it as answer text. `supportsDeveloperRole`/`supportsReasoningEffort`
 are false: llama.cpp has no `reasoning_effort`, and the `developer` role is a bad fit here.
+
+**Do not name the provider `llama.cpp`** — that is pi's built-in router-aware provider, and
+defining it in models.json overrides it (documented merge/override behaviour). `llama.local`
+is a clean custom id.
+
+**If `settings.json` has an `enabledModels` allowlist, a new provider must be added there
+too** or the models stay gated out of `/model` even though they are listed. This box had a
+stale `omlx/qwen3.8-27b` entry; it now reads:
+
+```
+"enabledModels": [
+  "qwen-token-plan-individual/qwen3.8-flash",
+  "qwen-token-plan-individual/qwen3.8-max",
+  "llama.local/qwen3.8-27b",
+  "llama.local/qwen3.8-27b-4s",
+  "llama.local/qwen3.8-27b-4xl"
+]
+```
+
+Verify without the TUI: `pi --list-models` — it shows each entry's window and prints a
+warning for any allowlist entry that matches nothing (that is how the stale `omlx` row was
+caught). Expected output row:
+`llama.local  qwen3.8-27b  213.0K  32.8K  yes  yes`.
 
 **Three entries, because the context window differs per quant profile** — `maxTokens`
 32,768 on all three:
