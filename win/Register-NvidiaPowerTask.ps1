@@ -31,6 +31,20 @@ $setter = Join-Path $here 'Set-NvidiaPowerLimits.ps1'
 
 if (-not (Test-Path $setter)) { Write-Error "missing $setter - keep both scripts together"; exit 1 }
 
+# A SYSTEM task that starts at boot must not depend on WSL being up. If these scripts are run
+# straight from \\wsl.localhost\..., the task would have to reach into a distro that may not be
+# started yet, and it can also die when the distro path moves. Copy them to a Windows-local
+# folder first and register from there.
+if ($here -like '\\*') {
+    $dest = Join-Path $env:ProgramData 'ModelServe\win'
+    Write-Warning "running from a network/WSL path; copying scripts to $dest and re-run the registration THERE."
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    Copy-Item (Join-Path $here 'Set-NvidiaPowerLimits.ps1'), (Join-Path $here 'Register-NvidiaPowerTask.ps1') $dest -Force
+    "copied to: $dest"
+    "now run:   cd $dest; .\Register-NvidiaPowerTask.ps1"
+    return
+}
+
 if ($Remove) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
