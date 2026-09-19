@@ -52,9 +52,8 @@ mode of getting that wrong is a silently borderline server. So config.ps1 now ke
 apart: **MSProfiles** = the four bootable configurations, **MSTiers** = small/medium/large/max,
 which pick a size *within* a profile.
 
-    C:\ModelServe\win\start.cmd                    # q3, the default
-    C:\ModelServe\win\start.cmd -P q3l             # 225,280 ctx, correct batch automatically
-    C:\ModelServe\win\start.cmd -P q4 -Tier medium
+Usage lines for all four live in [USAGE.md](USAGE.md); the command block that used to sit here is
+removed rather than duplicated, so it cannot drift from the scripts.
 
 `-Q` remains a synonym for `-P` so the WSL habit of "Q=q4s TIER=medium" works on both sides.
 The q3l batch is applied only when nobody overrode it (an explicit -Batch or $env:BATCH wins),
@@ -63,38 +62,22 @@ a second set of numbers nobody measured. q3l is **native-only**: the same trick 
 ext4 (serve.sh takes BATCH/UBATCH too) but has not been re-measured there, so llama.local does
 not advertise it.
 
-## Using it
+## How to run it
 
-    :: from an elevated prompt if you want the firewall rule / boot task
-    \\wsl.localhost\Ubuntu-26.04\home\naz\Projects\ModelServe\win\install-windows.cmd
-    :: afterwards, always from the NTFS copy (does not depend on a distro being up)
-    C:\ModelServe\win\install-windows.cmd
-    C:\ModelServe\win\check.cmd          :: read-only preflight, run it after every reboot
-    C:\ModelServe\win\start.cmd          :: detached; waits for the load; prints the baseUrl
-    C:\ModelServe\win\stop.cmd           :: stops the tree and SHOWS the VRAM coming back
-    C:\ModelServe\win\serve.cmd          :: foreground, for watching the load trace live
+Typing, switching, exit codes, output meanings and symptom-based troubleshooting are owned by
+**[USAGE.md](USAGE.md)** — read that, not this file, for day-to-day use.
 
-**Every entry point is a .cmd, not a .ps1, and that is not stylistic.** LocalMachine execution
-policy on this box is AllSigned, so a bare `.\check.ps1` is refused with "is not digitally
-signed" (verified, not assumed). cmd.exe is not a script and is not subject to ExecutionPolicy,
-and the wrappers pass `-ExecutionPolicy Bypass`, which sets the Process scope — and Process
-outranks LocalMachine (precedence: MachinePolicy > UserPolicy > Process > CurrentUser >
-LocalMachine). So nothing is loosened system-wide and no policy is changed. This is the same
-pattern the power-limit task already uses; the WSL-side harness reaches the .ps1 files directly
-by passing that same Bypass flag itself, which is why ladder and stability runs work from WSL.
-
-Code-signing the .ps1 files was considered and rejected: it needs a self-signed certificate
-imported into TrustedPublisher (a trust-store change, to work around a policy the wrapper already
-sidesteps), and every edit invalidates the signature, so the installer would have to re-sign on
-every deploy and any hand-edit on the machine would silently break the next run.
-
-Knob vocabulary matches serve.sh: `-P|-Q q3|q3l|q4s|q4 -Tier small|medium|large|max -Ctx -Split
--Kv -Mm -Ngl -Batch -Ubatch -MinP -Port -Bind -Spec -Ceil -Model`. `-DryRun` on serve.ps1 and
-`-WhatIf` on start.ps1 both print the resolved command; `-WhatIf` deliberately delegates to
-`-DryRun` so there is one place that knows how argv is assembled.
-
-From WSL: `../win/probe-from-wsl.sh` (no args) — resolves the host IP itself, then checks
-TCP, /health, /v1/models, and one timed completion, and tells you WHICH layer broke.
+One decision recorded here, because it will be re-proposed: entry points are **.cmd wrappers**,
+not signed scripts. LocalMachine policy on this box is AllSigned, so a bare `.\start.ps1` is
+refused with "is not digitally signed" (verified). cmd.exe is not subject to ExecutionPolicy and
+the wrappers pass `-ExecutionPolicy Bypass`, which sets the Process scope — and Process outranks
+LocalMachine (precedence: MachinePolicy > UserPolicy > Process > CurrentUser > LocalMachine).
+So nothing is loosened system-wide. Code-signing was rejected: it needs a self-signed certificate
+imported into TrustedPublisher (a trust-store change to work around a policy the wrapper already
+sidesteps), and every edit invalidates a signature, so the installer would have to re-sign on each
+deploy and any hand-edit on the machine would silently break the next run. The WSL-side harness
+reaches the .ps1 files by passing that same Bypass flag itself, which is why ladder and stability
+runs work from WSL at all.
 
 ## Things that are different here, and were measured, not assumed
 
@@ -197,8 +180,8 @@ existing two scripts now accept a remote target:
   side: both views read the same host driver, and the 400/240 thresholds were defined there,
   so the MiB numbers remain comparable with the ext4 runs
 
-Usage: `SIZES=196608 ./win/ladder-from-wsl.sh`, `./win/stability-from-wsl.sh 3 q3`,
-`BASE=http://172.25.240.1:8000 ./test.sh`.
+Invocation for all three is in [USAGE.md](USAGE.md) (including why sweep extras must be passed as
+`EXTRA="..."` arguments rather than environment).
 
 **Interop: the finding that cost the most.** WSL does not return a Windows command until the
 process *tree* it spawned has finished. `start.ps1` exits in ~15 s after it sees health:ok, but

@@ -1,8 +1,11 @@
 # Qwen3.8-27B GGUF on WSL2 (RTX 5070 Ti + RTX 3080) — working setup
 
 Status: **running and verified**. `./start.sh` → http://127.0.0.1:8000
-Also running **natively on Windows** out of `C:\ModelServe` — same build, same scripts in
-`win/`, measured at 50.3 tok/s on this profile: see [win/README.md](win/README.md).
+Also running **natively on Windows** out of `C:\ModelServe` — same build and commit, its own
+profiles and measurement tables in `win/`. Run it via the `.cmd` entry points:
+[win/USAGE.md](win/USAGE.md) for typing, [win/README.md](win/README.md) for findings.
+Measured there: 1,258-1,290 tok/s prompt processing, 50.6-50.9 tok/s decode, four profiles each
+3/3 SAFE boots at >=517 MiB worst-case free.
 Repo: `~/Projects/ModelServe`. Models live in `~/.models` and are never in-tree.
 Machine facts and the GPU-role split live in `~/nodes/002-hardware.md`; the serving
 measurements in `~/nodes/004-*.md` and `~/nodes/005-*.md`.
