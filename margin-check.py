@@ -18,7 +18,11 @@ which at 3080=150W / 5070Ti=250W, q3 @196,608, split 17.4,7.7 reported 1,258 tok
 import json, os, subprocess, threading, time, urllib.request
 
 PORT = os.environ.get("PORT", "8000")
-B = f"http://127.0.0.1:{PORT}"
+# BASE lets the WSL-native harness measure the Windows-hosted server. The nvidia-smi sampling
+# below is NOT redirected: the WSL shim and nvidia-smi.exe both read the same host driver, so
+# keeping WSL's nvidia-smi is what makes these MiB numbers comparable with the ext4 runs that
+# defined the 400/240 thresholds. Default is unchanged for the local (serve.sh) workflow.
+B = os.environ.get("BASE", f"http://127.0.0.1:{PORT}")
 WORDS = int(os.environ.get("WORDS", "30000"))
 KEY = os.environ.get("OMLX_API_KEY", "")
 NAMES = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],

@@ -12,29 +12,46 @@
 set -euo pipefail
 ROOT="${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"   # repo-relative, moves with the checkout
 [ -f "$ROOT/config.sh" ] && . "$ROOT/config.sh"   # PORT/HOST defaults
-PORT="${PORT:-8000}"; B="http://127.0.0.1:$PORT"
+PORT="${PORT:-8000}"; B="${BASE:-http://127.0.0.1:$PORT}"   # BASE=... to test the native-Windows server
+
+# SERVER_LOG is parsed for the MTP acceptance line. For the Windows-hosted server, point it at
+# the NTFS log via the mount:  SERVER_LOG=/mnt/c/ModelServe/logs/server.err.log
+export SERVER_LOG="${SERVER_LOG:-$ROOT/server.log}"
 
 echo "== 0. live process args =="
-if pgrep -af 'llama[-]server' | grep -q -- '--spec-type draft-mtp'; then
+case "$B" in
+  *127.0.0.1*|*localhost*|*\[::1\]*)
+    if pgrep -af 'llama[-]server' | grep -q -- '--spec-type draft-mtp'; then
   echo "  OK: --spec-type draft-mtp and friends are in effect"
 else
   echo "  FAIL: flags missing from the running process - check serve.sh line continuations" >&2
-fi
+fi ;;
+  *)
+    echo "  SKIP: the server runs on another OS ($B), so its argv is not visible from here."
+    echo '        Verify it there: win\check.ps1, or (Get-CimInstance Win32_Process).CommandLine' ;;
+esac
 
 echo "== 1. health / capabilities =="
 curl -sS --max-time 20 "$B/health"; echo
-curl -sS --max-time 20 "$B/v1/models" | grep -o '"capabilities":\[[^]]*\]' | head -1
+curl -sS --max-time 20 ${OMLX_API_KEY:+-H "Authorization: Bearer $OMLX_API_KEY"} "$B/v1/models" | grep -o '"capabilities":\[[^]]*\]' | head -1
 
-export SERVER_LOG="${SERVER_LOG:-$ROOT/server.log}"
 python3 - "$B" <<'PY'
 _PORT = __import__("os").environ.get("PORT", "8000")
-import json, struct, sys, time, urllib.request, zlib
+import json, os, struct, sys, time, urllib.request, zlib
 
 B = sys.argv[1]
 
+# The server requires a bearer key as soon as it binds anywhere but loopback (serve.sh and
+# win\serve.ps1 both refuse otherwise), so every call here must carry it or step 2 dies with
+# 401 while step 1 - which uses curl - looks healthy.
+KEY = os.environ.get("OMLX_API_KEY") or os.environ.get("LLAMA_API_KEY") or ""
+
 def post(payload, t=300):
+    h = {"Content-Type": "application/json"}
+    if KEY:
+        h["Authorization"] = "Bearer " + KEY
     req = urllib.request.Request(B + "/v1/chat/completions", data=json.dumps(payload).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers=h)
     return json.load(urllib.request.urlopen(req, timeout=t))
 
 def png(rgb):

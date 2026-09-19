@@ -1,6 +1,8 @@
 # Qwen3.8-27B GGUF on WSL2 (RTX 5070 Ti + RTX 3080) — working setup
 
 Status: **running and verified**. `./start.sh` → http://127.0.0.1:8000
+Also running **natively on Windows** out of `C:\ModelServe` — same build, same scripts in
+`win/`, measured at 50.3 tok/s on this profile: see [win/README.md](win/README.md).
 Repo: `~/Projects/ModelServe`. Models live in `~/.models` and are never in-tree.
 Machine facts and the GPU-role split live in `~/nodes/002-hardware.md`; the serving
 measurements in `~/nodes/004-*.md` and `~/nodes/005-*.md`.
@@ -18,7 +20,9 @@ measurements in `~/nodes/004-*.md` and `~/nodes/005-*.md`.
 | mmproj | `clip` arch, `projector_type = qwen3vl_merger`, 27-block ViT, deepstack, 0.86 GiB |
 
 Weights: 16.34 GiB main + 0.86 GiB mmproj = **17.2 GiB** → both GPUs required.
-System RAM is **15 GB**, so never offload weights to CPU.
+**RAM available to WSL is 15 GB** (the host has 31.9 GB; the rest is Windows' and `vmmemWSL`
+carves it dynamically), so never offload weights to CPU from here. That number describes the
+VM, not the machine — relevant again in `win/README.md`.
 
 ## Install (no sudo, no compiler, no CUDA toolkit)
 
@@ -94,6 +98,12 @@ all three entries to the Qwen thinking-mode values:
 Field names must be llama.cpp's, not OpenAI's or intuition's - `sampling-check.py` confirms
 the server answers **200 and silently ignores** unrecognised keys (`repetition_penalty`,
 `totally_bogus_key`), so a misspelling is invisible rather than an error. Use **`repeat_penalty`**.
+
+The same block is carried on all three **`llama.win`** entries — the second provider now in
+`pi-models.example.json` and `~/.pi/agent/models.json`, pointing at the native-Windows server —
+so both OSes sample identically. It was produced by deep-cloning `llama.local` (baseUrl and the
+display names excepted), which is why the two cannot drift apart. See
+[win/README.md](win/README.md#pointing-pi-at-it).
 
 What actually changes vs llama.cpp defaults: `temperature/top_p/top_k` are already read from
 the GGUF (`general.sampling.*`), `presence_penalty` 0.0 and `repeat_penalty` 1.0 are the
