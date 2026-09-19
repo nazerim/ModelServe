@@ -24,8 +24,14 @@ param(
     [int]$Ctx, [int]$Npred, [string]$Split, [string]$Ngl, [string]$Kv, [string]$Mm,
     [int]$Batch, [int]$Ubatch, [string]$MinP, [int]$Port, [string]$Bind, [string]$Alias,
     [string]$Spec, [int]$SpecMax, [int]$Ceil,
-    [switch]$NoVerify,
+    [string]$Bin, [string]$CacheDir, [int]$CacheMax, [int]$Ctxcp, [int]$Cms,
+    [switch]$NoVerify, [switch]$NoCacheDir,
     [int]$TimeoutSec = 300,
+    # Anything that is not a start.ps1 parameter is forwarded to serve.ps1 verbatim, which already
+    # appends its own tail to the llama-server argv. Without this, `start.cmd ... -lv 4` dies with
+    # "A parameter cannot be found that matches parameter name 'lv'" even though serve.cmd accepts
+    # it - the passthrough existed on one side of the pair only.
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$ExtraArgs,
     [switch]$WhatIf
 )
 
@@ -40,8 +46,23 @@ $errLog = Join-Path $LogDir 'server.err.log'
 if (-not $WhatIf -and -not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
 
 # Refuse to stack a second server on top of a live one: two processes fighting over the same
-# VRAM is the fastest route to the driver reset this box is already prone to.
-if (-not $WhatIf -and (Test-Path $script:MSPidFile)) {
+# VRAM is the fastest route to the driver reset this box is already prone to - and with the disk
+# prompt cache on it is worse, because entries are opened with an exclusive handle and a second
+# instance deletes whatever it cannot read (see README, "Disk KV cache").
+# The pid file alone was NOT enough. When a boot died instantly the file was written with an
+# empty Id, this check then saw nothing, and each retry silently stacked another model load.
+if (-not $WhatIf) {
+    $live = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" -ErrorAction SilentlyContinue)
+    if ($live.Count) {
+        Write-Host ("refusing: {0} llama-server process(es) already running" -f $live.Count) -ForegroundColor Red
+        $live | ForEach-Object {
+            $c = ("" + $_.CommandLine) -replace '\s+', ' '
+            if ($c.Length -gt 110) { $c = $c.Substring(0, 110) + '...' }
+            Write-Host ('  pid ' + $_.ProcessId + '  ' + $c)
+        }
+        Write-Host '  use stop.cmd first (or check.cmd)' -ForegroundColor Red
+        exit 1
+    }
     $old = (Get-Content $script:MSPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($old -and (Get-Process -Id $old -ErrorAction SilentlyContinue)) {
         Write-Host "already running as PID $old - use stop.cmd first (or check.cmd)" -ForegroundColor Red
@@ -53,10 +74,14 @@ if (-not $WhatIf -and (Test-Path $script:MSPidFile)) {
 # serve.ps1's own defaults and the two files would drift apart.
 $forward = @()
 foreach ($name in @('Q','P','Tier','Model','ModelDir','Ctx','Npred','Split','Ngl','Kv','Mm',
-                    'Batch','Ubatch','MinP','Port','Bind','Alias','Spec','SpecMax','Ceil')) {
+                    'Batch','Ubatch','MinP','Port','Bind','Alias','Spec','SpecMax','Ceil',
+                    'Bin','CacheDir','CacheMax','Ctxcp','Cms')) {
     if ($PSBoundParameters.ContainsKey($name)) { $forward += ('-{0}' -f $name); $forward += ("" + $PSBoundParameters[$name]) }
 }
-if ($NoVerify) { $forward += '-NoVerify' }
+if ($NoVerify)   { $forward += '-NoVerify' }
+if ($NoCacheDir) { $forward += '-NoCacheDir' }
+# Forwarded last so a passthrough can never be mistaken for one of our own switches.
+if ($ExtraArgs)  { $forward += $ExtraArgs }
 
 $Port    = if ($Port) { $Port } else { 8000 }
 # Resolve 'wsl' once, here, and hand serve.ps1 a literal address. Otherwise the child could
@@ -83,20 +108,40 @@ if ($WhatIf) {
 }
 
 $childArgs = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $servePs1) + $forward
+function Trunc($s, $n) { if (-not $s) { return '' }; $s = ($s | Out-String) -replace "\r?\n", ' '; if ($s.Length -le $n) { return $s } else { return $s.Substring(0, $n) + '...' } }
+
 $p = Start-Process -FilePath 'powershell.exe' -ArgumentList $childArgs `
         -WorkingDirectory $script:MSBin `
         -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-Set-Content -Path $script:MSPidFile -Value $p.Id
-Write-Host ("launched PID {0}  log {1}" -f $p.Id, $outLog)
+
+# Resolve a PID we can actually poll, and never continue without one. -PassThru returns an object
+# whose .Id is EMPTY when the child has already exited, which is exactly what happened once a boot
+# died on a port/VRAM clash: the script printed "launched PID " with nothing, wrote an empty pid
+# file, and then crashed on Get-Process -Id. Ask the OS instead of trusting the object.
+$childId = $null
+if ($p) { $childId = $p.Id }
+if (-not $childId) {
+    $kid = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId={0}" -f $PID) -ErrorAction SilentlyContinue |
+             Where-Object { $_.Name -eq 'powershell.exe' -and ("" + $_.CommandLine) -match 'serve\.ps1' })[0]
+    if ($kid) { $childId = [int]$kid.ProcessId
+        Write-Host ("  (Start-Process gave no usable PID; tracking child {0})" -f $childId) -ForegroundColor DarkGray }
+}
+if (-not $childId) {
+    Write-Host 'child exited immediately and left no PID to track - last log lines:' -ForegroundColor Red
+    Get-Content $errLog, $outLog -Tail 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  ' + (Trunc $_ 170)) }
+    Remove-Item $script:MSPidFile -ErrorAction SilentlyContinue
+    exit 1
+}
+Set-Content -Path $script:MSPidFile -Value $childId
+Write-Host ("launched PID {0}  log {1}" -f $childId, $outLog)
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $startAt = Get-Date
-function Trunc($s, $n) { if (-not $s) { return '' }; $s = ($s | Out-String) -replace "\r?\n", ' '; if ($s.Length -le $n) { return $s } else { return $s.Substring(0, $n) + '...' } }
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 3
     $elapsed = [int]((Get-Date) - $startAt).TotalSeconds
-    if (-not (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Process -Id $childId -ErrorAction SilentlyContinue)) {
         Write-Host "process exited early - last log lines:" -ForegroundColor Red
         Get-Content $errLog, $outLog -Tail 8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  ' + (Trunc $_ 170)) }
         Remove-Item $script:MSPidFile -ErrorAction SilentlyContinue
