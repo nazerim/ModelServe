@@ -53,6 +53,16 @@ param(
     [int]$Ceil    = $(if ($env:CEIL)   { [int]$env:CEIL }   else { 0 }),
     [string]$Bind   = $(if ($env:BIND)   { $env:BIND }      else { 'wsl' }),
     [string]$Alias  = $(if ($env:ALIAS)  { $env:ALIAS }     else { '' }),
+    # -Bin swaps in a different llama-server.exe (e.g. the patched CUDA build that carries
+    # --cache-dir). -CacheDir/-CacheMax steer the disk prompt cache; -NoCacheDir turns it off.
+    # Empty defaults are resolved against config.ps1 AFTER it is dot-sourced, below.
+    [string]$Bin      = $(if ($env:BIN) { $env:BIN } else { '' }),
+    [string]$CacheDir = $(if ($env:CACHE_DIR) { $env:CACHE_DIR } else { '' }),
+    [int]$CacheMax    = $(if ($env:CACHE_MAX) { [int]$env:CACHE_MAX } else { -1 }),
+    # Checkpoint budget for the disk tier (0 = send nothing and accept llama.cpp's own defaults).
+    [int]$Ctxcp       = $(if ($env:CTXCP) { [int]$env:CTXCP } else { -1 }),
+    [int]$Cms         = $(if ($env:CMS)   { [int]$env:CMS }   else { -1 }),
+    [switch]$NoCacheDir,
     [switch]$NoVerify,
     [switch]$DryRun,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$ExtraArgs
@@ -63,6 +73,35 @@ param(
 # Defaults that come from config.ps1 must be applied AFTER dot-sourcing it: a param default is
 # evaluated before the body runs, so $script:MSModels is still $null there (this bit me once).
 if (-not $ModelDir) { $ModelDir = $script:MSModels }
+
+# Which binary we are about to exec, and what the cache was asked to do. $Exe rather than
+# $script:MSExe everywhere below: the cache probe, the assertions, the printed command and the
+# exec must all describe the SAME binary, or the summary lies about the boot.
+# The PATCHED build is the default when it is installed, because it is the only one with
+# --cache-dir. $script:MSExe stays the pinned prebuilt so install-windows.ps1 keeps describing the
+# release track it downloads - but note that a default boot is therefore NOT the b11034 build the
+# ceilings/splits in config.ps1 were measured on; the summary records which one ran (BIN=...).
+if ($Bin) { $Exe = $Bin }
+elseif (Test-Path $script:MSExePatched) { $Exe = $script:MSExePatched }
+else { $Exe = $script:MSExe }
+$ExeParent = Split-Path -Parent $Exe                                  # bare 'llama-server.exe' has no parent
+$ExeTag    = $(if ($ExeParent) { (Split-Path -Leaf $ExeParent) -replace '_', '' } else { 'cwd' })
+if (-not $CacheDir -and -not $NoCacheDir) { $CacheDir = $script:MSCacheDir }
+$CacheDirWasDefault = [bool]($CacheDir -and (-not $PSBoundParameters.ContainsKey('CacheDir')) -and (-not $env:CACHE_DIR))
+# -1 means "caller said nothing", because 0 is a real value: llama.cpp treats --cache-dir-max 0 as
+# "disable the cache", and rewriting 0 to the default both ignores the caller and (worse) still
+# counts as an explicit request. Same sentinel pattern as -Ctxcp/-Cms below.
+if ($CacheMax -lt 0) { $CacheMax = $script:MSCacheMaxMiB }
+if ($CacheMax -eq 0) {
+    [Console]::Error.WriteLine('note: -CacheMax 0 means "no disk tier"; booting without --cache-dir.')
+    $NoCacheDir = $true; $CacheDir = ''
+}
+# -1 means "caller said nothing": take config's budget. 0 stays an explicit "omit the flag".
+if ($Ctxcp -eq -1) { $Ctxcp = $script:MSCtxcp }
+if ($Cms   -eq -1) { $Cms   = $script:MSCms }
+# An explicitly requested cache must never be dropped quietly; a defaulted one may fall back
+# with a warning, so the pinned prebuilt b11034 keeps booting exactly as it always did.
+$CacheAsked = [bool]($PSBoundParameters.ContainsKey('CacheDir') -or $PSBoundParameters.ContainsKey('CacheMax') -or $env:CACHE_DIR -or $env:CACHE_MAX)
 
 # Capture the requested override BEFORE the profile lookup overwrites $Ceil - the param is also
 # named -Ceil, so reading it after the table lookup would always yield the profile default.
@@ -124,8 +163,8 @@ if ($Ceil -and $CtxWant -gt $Ceil) {
 }
 
 # ---- guards ---------------------------------------------------------------
-if (-not (Test-Path $script:MSExe)) {
-    Write-Host "missing $script:MSExe - run install-windows.cmd first" -ForegroundColor Red; exit 1
+if (-not (Test-Path $Exe)) {
+    Write-Host "missing $Exe - run install-windows.cmd first (or fix -Bin)" -ForegroundColor Red; exit 1
 }
 if (-not (Test-Path $ModelPath)) {
     Write-Host "no such model: $ModelPath" -ForegroundColor Red
@@ -164,6 +203,69 @@ if ($BindHost -ne '127.0.0.1' -and -not $key) {
 }
 if ($key) { $env:LLAMA_API_KEY = $key.Value }   # the child inherits; argv stays clean
 
+# llama.cpp commit), so entries from another profile - or another size/batch/KV within one profile -
+# are not merely unusable: the startup sweep classifies them as foreign and DELETES them. Seen live:
+# a q3l boot's five entries, 38 GiB, removed twelve seconds into a q3 boot, and the resumed session
+# then re-prefilled 73k tokens. The directory name therefore carries every part of the identity that
+# survives a boot: profile, resolved ctx, batch, ubatch and KV type (underscores dropped, because the
+# harness field parser only accepts [A-Za-z0-9.,/-]).
+$CacheId = ''
+if ($CacheDir -and $CacheDirWasDefault) {
+    $CacheId  = '{0}-{1}-{2}x{3}-{4}' -f $Q, $CtxWant, $Batch, $Ubatch, ($Kv -replace '_', '')
+    $CacheDir = Join-Path $script:MSCacheDir $CacheId
+} elseif ($CacheDir) {
+    $CacheId = (Split-Path -Leaf $CacheDir) -replace '_', ''
+    try   { $CacheDir = [System.IO.Path]::GetFullPath($CacheDir) }   # relative paths differ between
+    catch { }                                                        # serve.cmd (cwd C:\) and start.ps1
+}
+if ($CacheId) { $CacheId = $CacheId -replace '_', '' }
+
+# Probed, never assumed. --cache-dir exists only in a master + PR 28092 build; appending it to a
+# binary that does not know it aborts the boot with "invalid argument", and omitting it while
+# printing CACHE=... would record a configuration that never ran. So ask the binary itself.
+$CacheTag = 'off'
+if (-not $NoCacheDir -and $CacheDir) {
+    if ((Test-MSFlagSupport -Exe $Exe -Flag '--cache-dir') -ne 'supported') {
+        if ($CacheAsked) {
+            Write-Host "refusing: this llama-server has no --cache-dir." -ForegroundColor Red
+            Write-Host "  binary: $Exe" -ForegroundColor Red
+            Write-Host "  --cache-dir needs a build of master + PR 28092 (see win/README.md, Disk KV cache)." -ForegroundColor Red
+            Write-Host "  either point -Bin at such a build, or say -NoCacheDir to boot RAM-only." -ForegroundColor Red
+            exit 2
+        }
+        [Console]::Error.WriteLine("note: $Exe has no --cache-dir - prompt cache stays RAM-only.")
+        $CacheDir = ''
+        $CacheTag = 'unsupported'
+    } else {
+        if ((-not (Test-Path $CacheDir)) -and (-not $DryRun)) { New-Item -ItemType Directory -Force -Path $CacheDir | Out-Null }
+        # The tag goes on the record line, and prof_field() in win/wsl-harness.sh only accepts
+        # [A-Za-z0-9.,/-] - a Windows path with backslashes parses as "C", a plausible WRONG value
+        # instead of nothing. So the record carries the identity leaf, not the full path.
+        $CacheTag = '{0}/{1}MiB' -f $CacheId, $CacheMax
+        if (-not $DryRun) {
+            # One instance per cache dir: entries are opened with an exclusive handle, and an
+            # instance that cannot read a sibling's metadata deletes it in its startup sweep.
+            $others = @(Get-Process -Name 'llama-server' -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID })
+            if ($others.Count) {
+                [Console]::Error.WriteLine(("warning: {0} llama-server process(es) already running while the disk cache is on." -f $others.Count))
+                [Console]::Error.WriteLine(("         give each instance its own -CacheDir or they will erase each other's entries in {0}" -f $CacheDir))
+            }
+            # Free space is information, never a reason to kill a boot: DriveInfo throws on a UNC or
+            # otherwise odd path and $ErrorActionPreference is Stop, which would abort the launch with
+            # a .NET message instead of the server's own output.
+            try {
+                $drv = New-Object System.IO.DriveInfo (($CacheDir -replace '\\.*', '\') + ':')
+                $freeGB = [math]::Round($drv.AvailableFreeSpace / 1GB, 1)
+                if ($freeGB -lt (($CacheMax / 1024) + 20)) {
+                    [Console]::Error.WriteLine(("note: {0} GB free for a {1} MiB cache cap; an entry costs ~448 MiB + ~46 KiB/token." -f $freeGB, $CacheMax))
+                }
+            } catch {
+                [Console]::Error.WriteLine(("note: could not check free space for {0} ({1})" -f $CacheDir, $_.Exception.Message))
+            }
+        }
+    }
+}
+
 # ---- assemble args --------------------------------------------------------
 $A = @(
     '-m', $ModelPath
@@ -184,12 +286,21 @@ if ($Spec -and $Spec -ne 'none') { $A += @('--spec-type', $Spec, '--spec-draft-n
 if ($Ngl)   { $A += @('-ngl', $Ngl) }
 if ($Kv)    { $A += @('-ctk', $Kv, '-ctv', $Kv) }
 $A += @('--min-p', $MinP)
+# Only when the disk tier is actually on. b11034 accepts -ctxcp/-cms happily, so sending them on a
+# prebuilt boot would silently change its RAM-cache behaviour away from the numbers recorded for it
+# - and the whole point of the probe's fallback path is "boot unchanged".
+if ($CacheDir) {
+    if ($Ctxcp -gt 0) { $A += @('-ctxcp', "$Ctxcp") }
+    if ($Cms   -gt 0) { $A += @('-cms',   "$Cms") }
+}
 switch ($Mm) {
     'cpu'   { $A += @('--no-mmproj-offload') }
     '3080'  { $A += @('-mmdev', 'CUDA1') }
     'cuda0' { $A += @('-mmdev', 'CUDA0') }
     default { Write-Host "Mm must be cpu|3080|cuda0" -ForegroundColor Red; exit 2 }
 }
+# Cache flags go in only when the probe kept $CacheDir alive (see above).
+if ($CacheDir) { $A += @('--cache-dir', $CacheDir, '--cache-dir-max', "$CacheMax") }
 
 # ASSERT the command that will ACTUALLY EXEC - $A plus the passthrough tail. Asserting on $A alone
 # left a hole: `serve.cmd --api-key <secret>` arrives through ValueFromRemainingArguments, lands in
@@ -211,6 +322,9 @@ if ($key -and $env:LLAMA_API_KEY -ne $key.Value) { Write-Host "internal error: k
 if ($Final -notcontains $Alias) { Write-Host "internal error: --alias value missing from argv" -ForegroundColor Red; exit 3 }
 $req = @('--tensor-split', '-ctk')
 if ($Spec -and $Spec -ne 'none') { $req = @("--spec-type $Spec") + $req }
+if ($CacheDir) { $req += @('--cache-dir', '--cache-dir-max') }
+if ($CacheDir -and $Ctxcp -gt 0) { $req += '-ctxcp' }
+if ($CacheDir -and $Cms   -gt 0) { $req += '-cms' }
 foreach ($r in $req) {
     if ($flat -notlike "*$r*") { Write-Host "internal error: '$r' missing from argv" -ForegroundColor Red; exit 3 }
 }
@@ -219,7 +333,7 @@ foreach ($r in $req) {
 # 5070 Ti - the *opposite* of nvidia-smi's index order. If an update ever inverts it, the split
 # numbers silently mean the wrong cards, so check the live enumeration instead of assuming.
 if (-not $NoVerify -and -not $DryRun) {
-    $devs = (Get-MSNative -Exe $script:MSExe -Arguments @('--list-devices')) -join "`n"
+    $devs = (Get-MSNative -Exe $Exe -Arguments @('--list-devices')) -join "`n"
     if ($devs -notmatch "CUDA0:.*$([regex]::Escape($script:MSCuda0MustContain))") {
         Write-Host "REFUSING: CUDA0 is not the $script:MSCuda0MustContain, so -Split $Split favours the wrong card." -ForegroundColor Red
         Write-Host ($devs -replace '(?s)^.*Available devices', 'Available devices')
@@ -230,12 +344,12 @@ if (-not $NoVerify -and -not $DryRun) {
 }
 
 # Profile first, since that is the noun now (Tier is only the size knob within it).
-$summary = 'P={0} Tier={1} -> CTX={2} NPRED={3} SPLIT={4} NGL={5} KV={6} MM={7} BATCH={8}/{9} MINP={10} SPEC={13} ALIAS={11} BIND={12} AUTH={14}' -f `
-    $Q, $Tier, $CtxWant, $Npred, $Split, $Ngl, $Kv, $Mm, $Batch, $Ubatch, $MinP, $Alias, $BindHost, $Spec, $(if ($key) { 'yes' } else { 'no' })
+$summary = 'P={0} Tier={1} -> CTX={2} NPRED={3} SPLIT={4} NGL={5} KV={6} MM={7} BATCH={8}/{9} MINP={10} SPEC={13} ALIAS={11} BIND={12} AUTH={14} CKPT={15} CACHE={16} BIN={17}' -f `
+    $Q, $Tier, $CtxWant, $Npred, $Split, $Ngl, $Kv, $Mm, $Batch, $Ubatch, $MinP, $Alias, $BindHost, $Spec, $(if ($key) { 'yes' } else { 'no' }), ('{0}/{1}' -f $Ctxcp, $Cms), $CacheTag, $ExeTag
 
 if ($DryRun) {
     Write-Host $summary
-    Write-Host (' ' + $script:MSExe + ' ' + $flat)
+    Write-Host (' ' + $Exe + ' ' + $flat)
     exit 0
 }
 
@@ -243,5 +357,5 @@ Write-Host $summary
 Write-Host ("url: http://{0}:{1}/v1  (from WSL: same IP, and pi's baseUrl must use it)" -f $BindHost, $Port)
 # exec-equivalent: this script's exit code becomes llama-server's. $Final, so the asserted command
 # and the exec'd command are the same string and cannot disagree.
-& $script:MSExe @Final
+& $Exe @Final
 exit $LASTEXITCODE

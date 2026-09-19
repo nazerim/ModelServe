@@ -92,6 +92,13 @@ Runtime
 : `-Batch`/`-Ubatch` prompt buffer · `-MinP` · `-Spec` `draft-mtp|none` + `-SpecMax`
 : `-NoVerify` skip the device-order check · `-TimeoutSec` (start)
 
+Prompt cache (patched build only — see README, "Disk KV cache")
+: **The patched build is the default binary now** — serve.ps1 uses `llama-cuda28092\llama-server.exe` when it exists, and falls back to the pinned prebuilt when it does not. Force the prebuilt: `-Bin C:\ModelServe\llama\llama-server.exe` (it boots without `--cache-dir`, and the summary then says `CACHE=unsupported BIN=llama`).
+: `-Bin` a specific `llama-server.exe` · `-CacheDir` path (default `C:\ModelServe\cache\<profile>-<ctx>-<batch>x<ubatch>-<kv>`) · `-CacheMax` in MiB (default 65,536; `0` means no disk tier) · `-NoCacheDir` boot without the disk tier
+: `-Ctxcp` max context checkpoints (default 12) · `-Cms` checkpoint spacing in tokens (default 16,384) — the budget that decides entry size, write stall and reuse granularity
+: Env: `BIN`, `CACHE_DIR`, `CACHE_MAX`, `CTXCP`, `CMS`. Asking explicitly for a cache the binary cannot do is a refusal (exit 2), never a silent omission.
+: Anything unrecognised is forwarded to `llama-server` by both `serve.cmd` and `start.cmd` — e.g. `-lv 4` to see the cache's own decision lines ("looking for better prompt", "update took", "forcing full prompt re-processing"), which verbosity 3 does not print.
+
 ### Precedence — what wins
 
 1. An explicit switch beats a profile default. `-Batch 1024` on `-P q3l` gives you 1024, and

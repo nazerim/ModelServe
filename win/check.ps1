@@ -30,7 +30,7 @@ function Section($m) { Write-Host ("`n" + $m) -ForegroundColor Cyan }
 
 Section 'MODEL-SERVE NATIVE CHECK'
 Line 'root'      $script:MSRoot
-Line 'build pin' ($script:MSBuild + ' / CUDA ' + $script:MSCuda)
+Line 'build pin (prebuilt)' ($script:MSBuild + ' / CUDA ' + $script:MSCuda)
 
 Section 'binaries'
 if (Test-Path $script:MSExe) {
@@ -96,6 +96,49 @@ if ($pf) {
 foreach ($d in @($script:MSRoot)) {
     $drive = ([System.IO.DriveInfo](($d -replace '\\.*', '\') + ':'))
     Line ('free on ' + $drive.Name) ('{0} GB' -f [math]::Round($drive.AvailableFreeSpace / 1GB, 1)) $(if ($drive.AvailableFreeSpace / 1GB -lt 50) { 'warn' } else { $null })
+}
+
+Section 'disk prompt cache'
+# Report what serve.ps1 will actually be able to do, not what config asks for. The failure mode
+# worth surfacing is a cache that silently never fills: an entry costs ~448 MiB + ~46 KiB per
+# token, so a cap smaller than one entry means nothing is ever written (measured: "cache state:
+# 0 prompts" with only a warning). --cache-dir also REPLACES --cache-ram; there is no tiering.
+function CacheSupport($exe) { return (Test-MSFlagSupport -Exe $exe -Flag '--cache-dir') }
+# Report BOTH binaries: which one supports the flag, and which one a plain start.cmd will use.
+Line '--cache-dir, prebuilt' (CacheSupport $script:MSExe)
+Line '--cache-dir, patched'  (CacheSupport $script:MSExePatched)
+# Name the binary serve.ps1 will actually pick when the caller says nothing, and say what BUILD it
+# is: the 'build pin' line above describes the prebuilt release track, which is no longer what a
+# default boot runs, and a report that implies otherwise is the same class of lie as a PASS row for
+# a context that never booted.
+$defExe = $script:MSExe
+if (Test-Path $script:MSExePatched) { $defExe = $script:MSExePatched }
+$defParent = Split-Path -Parent $defExe
+Line 'default binary' $(if ($defParent) { Split-Path -Leaf $defParent } else { 'cwd' })
+Line 'default build'  (((Get-MSNative -Exe $defExe -Arguments @('--version')) | Select-Object -Last 1) -replace '^\s+', '')
+if (Test-Path $script:MSExePatched) {
+    Line 'patched build' $script:MSExePatched 'ok'
+} else {
+    Line 'patched build' ('absent ({0}) - the disk tier needs it' -f $script:MSExePatched)
+}
+Line 'cache dir' ($script:MSCacheDir + '\<profile>')
+Line 'cache cap' ('{0} MiB ({1:N1} GiB) per profile' -f $script:MSCacheMaxMiB, ($script:MSCacheMaxMiB / 1024))
+if (Test-Path $script:MSCacheDir) {
+    # Per-profile subdirectories, because entries are keyed on n_ctx/batch/ubatch: a shared
+    # directory means switching profile DELETES the other profile's entries at startup (seen live -
+    # five entries, 38 GiB, removed twelve seconds into a q3 boot that followed a q3l boot).
+    Get-ChildItem $script:MSCacheDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $b = @(Get-ChildItem $_.FullName -Filter '*.bin' -ErrorAction SilentlyContinue)
+        $g = [math]::Round(((($b | Measure-Object -Property Length -Sum).Sum) / 1GB), 2)
+        Line ('  ' + $_.Name) ('{0} entries, {1} GiB' -f $b.Count, $g)
+    }
+    $orph = @(Get-ChildItem $script:MSCacheDir -Filter '*.bin' -File -ErrorAction SilentlyContinue)
+    if ($orph.Count) {
+        $og = [math]::Round(((($orph | Measure-Object -Property Length -Sum).Sum) / 1GB), 2)
+        Line '  top-level orphans' ('{0} entries, {1} GiB - pre-per-profile layout, safe to delete' -f $orph.Count, $og) 'warn'
+    }
+} else {
+    Line 'entries on disk' 'dir not created yet (first cache-enabled boot makes it)'
 }
 
 Section 'models on NTFS'

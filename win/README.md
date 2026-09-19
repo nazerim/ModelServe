@@ -152,6 +152,105 @@ reset for a frozen desktop.
 an unattended box can sleep mid-context and take both GPUs with it. Whatever keeps it awake for
 a 200K benchmark day needs to be a deliberate setting, not luck.
 
+## Disk KV cache (patched build only)
+
+Stock b11034 has no disk tier. Its prompt cache is RAM-only (`-cram`, default 8192 MiB) and on
+overflow entries are dropped, never spilled. Upstream wants a disk tier in issue #20697 and PR
+#28092 implements it as `--cache-dir` / `--cache-dir-max`; as of 2026-09-19 both are open and
+#28092 has zero reviews, so using it means running a build we make ourselves. That build lives in
+`C:\ModelServe\llama-cuda28092` and **is now the default binary**: serve.ps1 picks it whenever it
+exists and falls back to the pinned prebuilt only when it does not. Force the prebuilt with
+`-Bin C:\ModelServe\llama\llama-server.exe`. `serve.ps1` probes the binary it is about to exec, so
+the summary line cannot claim `CACHE=...` for a build that would reject the flag; asking for the
+cache explicitly against a binary that lacks it is a refusal. The summary records which binary ran:
+`BIN=llama-cuda28092` or `BIN=llama`.
+
+Source of that build: https://github.com/nazerim/llama.cpp-disk-cache, branch `disk-cache-patch` —
+PR 28092 applied unmodified on base commit `911f6cdc8ab8a530b2bee09ee61471a6f3178eeb`, with the build
+recipe and these measurements in its FORK.md.
+
+**Measured here** — q4 profile, CUDA, split 17,8, MTP draft, q8_0 KV, `--cache-ram 0` so no RAM
+tier can explain a hit:
+
+| prompt | cold prefill | entry on disk | save cost | same prompt after a restart |
+|---|---|---|---|---|
+| 704 tok | 998.84 ms | 480.3 MiB | 443 ms | **159.22 ms**, 700 tokens reused |
+| 30,400 tok | 24,457 ms | 1,816.4 MiB | 1,750 ms | **304.61 ms**, 30,396 reused |
+
+So: **~448 MiB fixed plus ~46.1 KiB per token**. The fixed part is the DeltaNet recurrent state and
+~152 MiB per context checkpoint, so it scales with `-ctxcp`/`-cms`, not with the prompt. A 137k
+session is ~6.5 GiB, which is what the 64 GiB cap is sized for (about nine of them). Reads are
+memory-mapped and lazy — a boot with a 1.8 GiB entry present still came up in 11 s and the hit cost
+0.3 s. Writes are **synchronous and charged to the next request**, at ~0.96 s per GiB. Extended
+prompts hit too: sending the cached 704-token prefix plus 154 new tokens prefilled only the 154
+(`effective_prefix_reuse = 700`), which is the shape of a conversation rather than a repeat.
+
+Four things that bite, from reading the patch rather than guessing:
+
+1. `--cache-dir` **replaces** `--cache-ram`; there is no tiering, so the RAM path for short prefixes is gone.
+2. Entries are opened with an exclusive handle, and an instance that cannot read a sibling's `.meta`
+   deletes those entries in its startup sweep. serve.ps1 therefore keys the directory on the whole
+   identity that survives a boot — `cache\<profile>-<ctx>-<batch>x<ubatch>-<kv>` — so a profile
+   switch, a `-Tier`/`-Ctx` change and a ladder sweep of three context sizes each get their own
+   directory instead of wiping one another (seen live: five q3l entries, 38 GiB, deleted 12 s into a
+   q3 boot; the resumed session then re-prefilled 73k tokens). Two servers with the **same** identity
+   still need separate `-CacheDir` values.
+3. Entries are keyed on the llama.cpp commit, so a version bump invalidates the whole cache — fails
+   safe, no wrong answers, but every upgrade restarts you cold.
+4. If `--cache-dir-max` is smaller than one entry the cache silently never fills (observed:
+   `cache state: 0 prompts` with only a warning). Keep the cap at 2x a single entry or more.
+
+To use it: `check.cmd` reports which binaries support it, what the default binary is, and what is
+stored. Then just `start.cmd` (or `start.cmd -P q3l`) — the cache comes on by default at
+`C:\ModelServe\cache\<profile>` with a 64 GiB cap and CKPT=12/16384. `-NoCacheDir` boots without it;
+`-CacheDir`/`-CacheMax`/`-Ctxcp`/`-Cms` move or resize it.
+
+### Checkpoint budget — what actually sets the price
+
+An entry is `state + checkpoints`, and one checkpoint on this profile is ~0.8-1.1 GiB at 196,608
+context, so the checkpoint knobs - not the prompt length - dominate both disk and the synchronous
+write. Measured on the live q3 server with real pi sessions:
+
+| budget (-ctxcp / -cms) | entry sizes | worst update stall | cache after 3 switches |
+|---|---|---|---|
+| upstream defaults 32 / 8192 | 9.5 and 15.9 GiB | **49.9 s** | 31.6 GiB |
+| 9 / 20480 | 6.2 and 7.9 GiB | 19.4 s | 14.2 GiB |
+| **12 / 16384 (current)** | not yet tabulated | | |
+
+Spacing is also the granularity of reuse: a hit lands on the **last checkpoint before divergence**.
+
+What spacing **cannot** do, measured: prompt processing creates no checkpoints inside the prompt. A
+23,731-token prefill produced one checkpoint, at `n_tokens = 42` (149.8 MiB), and the next two only
+after generation (23,221 and 23,471, ~240 MiB each). The spread seen across a real pi session
+(19,894 / 43,960 / 67,506 at 20,480 spacing) marks where **decode** walked, not a grid — so no `-cms`
+value can guarantee a checkpoint under pi's ~19,517-token shared system-prompt boundary unless some
+session has already generated there. A brand-new session pays full prefill once (94,492 tokens,
+104.9 s measured, with the log saying `forcing full prompt re-processing due to lack of cache data`);
+returning to a session is where the tier pays (77,009 and 102,311 tokens reused, `f_keep = 1.000`).
+
+The knobs are `-Ctxcp` / `-Cms` (env `CTXCP` / `CMS`), recorded in the summary line as `CKPT=n/step`.
+Neither is part of the cache key: changing them leaves existing entries restorable (verified - a boot
+at 12/16384 restored the two entries written at 9/20480 with no sweep).
+
+**How the patched build is made** (14 min end to end, this box):
+
+* clone master at the PR's base (911f6cd worked) and `git apply` PR 28092's `.diff`. PR #26004 does
+  **not** apply to current master at all — it is stale, not in conflict with 28092 — and the disk
+  path does not need it.
+* CUDA 13.4 + MSVC 14.44. The toolkit cannot touch the driver: NVIDIA stopped bundling the Windows
+  driver in 13.1, so the 150 W cap and the TDR values on the 3080 stay put.
+* Use `-G "Ninja Multi-Config"`. The Visual Studio generator routes CUDA compiles through MSBuild's
+  `CUDA 13.4.targets` and dies with *The CUDA Toolkit directory '' does not exist*.
+* Pin the archs **and** the compiler. Both GPUs need kernels (`86` for the 3080, `120a` for the
+  5070 Ti — `native` detects one device and leaves the other without), and this box still has CUDA
+  v8.0/v9.2 whose `CUDA_PATH` hooks make `find_package(CUDAToolkit)` resolve v9.2, whose
+  `host_config.h` rejects MSVC 14.44. Both go in a `-C` preload file, because cmd.exe splits
+  `"86;120a"` at the semicolon.
+* Stage `cudart`/`cublas`/`cublasLt` next to the exe. CUDA 13.4 keeps the x64 copies in `bin\x64`,
+  not `bin\`, and a missing `cublas64_13.dll` yields an exe that exits 53 with no message. The
+  prebuilt tree in `C:\ModelServe\llama` already ships the same files. Expect Norton to re-trigger
+  on the new hash.
+
 ## Provenance of the two WSL assumptions that turned out to be about the VM, not the machine
 
 * "System RAM is 15 GB" — that is the WSL allocation on a 31.9 GB host (see 7).

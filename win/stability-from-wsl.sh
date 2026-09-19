@@ -38,7 +38,7 @@ if [ -n "${EXTRA_ARGS[*]-}" ]; then echo "extra args: ${EXTRA_ARGS[*]}"; fi
 # Authoritative prompt-processing rate comes from the server's own log, not margin-check's wall
 # time (which includes the generated tokens - its header warns about exactly this).
 SERVER_ERRLOG="${SERVER_ERRLOG:-/mnt/c/ModelServe/logs/server.err.log}"
-printf 'profile\tround\tdesktop_5070Ti_mib\tctx\tsplit\tbatch\tboot_s\tworst_free\tmin_gen_s\tstatus\tcommit_free_gb\thost_ram_free_gb\n' > "$OUT"
+printf 'profile\tround\tdesktop_5070Ti_mib\tctx\tsplit\tbatch\tboot_s\tworst_free\tmin_gen_s\tstatus\tcommit_free_gb\thost_ram_free_gb\tbin\tcache\n' > "$OUT"
 
 # ctx/split come from the script's own DRY output - one source of truth, the same trick
 # stability.sh uses with "DRY=1 ./serve.sh". This call is synchronous because it leaves nothing
@@ -47,6 +47,12 @@ dry=$(win_run "$WINSCRIPTS\\serve.ps1" 120 -P "$PROFILE" ${EXTRA_ARGS[@]+"${EXTR
 ctx=$(prof_field "$dry" CTX)
 sp=$(prof_field "$dry" SPLIT)
 bat=$(prof_field "$dry" BATCH)
+# Which binary and which cache identity produced this row. The default boot is now the patched
+# fork build, not the pinned b11034 the ceilings were measured on, so a row without BIN is not
+# comparable with one from before the flip - and CACHE identifies the on-disk entry set a run ran
+# against, which changes what a boot has to re-prefill.
+bin=$(prof_field "$dry" BIN)
+cache=$(prof_field "$dry" CACHE)
 alias_model=$(prof_field "$dry" ALIAS)
 # Anchored to serve.ps1's summary line on purpose: the same output also contains a clamp note
 # ("note: CTX=221184 exceeds the ceiling in force (196608)...") and win_run merges the streams, so
@@ -58,7 +64,7 @@ echo "target: $BASE  profile=$PROFILE alias=$alias_model  CTX=$ctx SPLIT=$sp BAT
 for i in $(seq 1 "$N"); do
   # A stop that could not be confirmed means the OLD server is still answering; measuring now
   # would attach this profile's numbers to a boot that is not ours. Skip the round, do not lie.
-  stop_win || { echo "  round $i SKIPPED: previous server did not stop cleanly" ; printf '%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\tSTOPFAIL\t-\t-\n' "$PROFILE" "$i" "$ctx" "$sp" "${bat:-?}" >> "$OUT"; continue; }
+  stop_win || { echo "  round $i SKIPPED: previous server did not stop cleanly" ; printf '%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\tSTOPFAIL\t-\t-\t%s\t%s\n' "$PROFILE" "$i" "$ctx" "$sp" "${bat:-?}" "${bin:-?}" "${cache:-?}" >> "$OUT"; continue; }
   pp=""   # do not carry a previous round's pp into this round's line
   desk=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sed -n 2p | tr -d ' ')
   caps=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | tr '\n' '/')
@@ -71,7 +77,7 @@ for i in $(seq 1 "$N"); do
     # Prove the answering server is THIS boot before a single number is recorded. llama.cpp ignores
     # the model name in requests, so a stale server produces a plausible SAFE row for a
     # configuration that is not running - which has already happened once on this box.
-    assert_identity "$alias_model" "$ctx" || { st="IDENTITY"; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t-\t%s\t-\t-\n' "$PROFILE" "$i" "${desk:-?}" "$ctx" "$sp" "${bat:-?}" "$boot" "$st" >> "$OUT"; continue; }
+    assert_identity "$alias_model" "$ctx" || { st="IDENTITY"; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t-\t%s\t-\t-\t%s\t%s\n' "$PROFILE" "$i" "${desk:-?}" "$ctx" "$sp" "${bat:-?}" "$boot" "$st" "${bin:-?}" "${cache:-?}" >> "$OUT"; continue; }
     echo "  then margin under load (${WORDS}-word prefill x$ROUNDS + 3 long gens)"
     res=$(MODEL="$alias_model" timeout 900 python3 "$ROOT/margin-check.py" 2>&1)
     echo "$res" | grep -E 'round [0-9]|gen [0-9]|WORST-CASE' | sed 's/^/    /'
@@ -98,8 +104,8 @@ for i in $(seq 1 "$N"); do
   # status is column 10; named positionally on purpose, since a hard-coded $NF broke a whole run's
   # counting once when a column was appended. batch is a column because the repo's own conclusion is
   # that the prompt batch is part of the measurement, not a preference.
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$PROFILE" "$i" "$desk" "$ctx" "$sp" "${bat:-?}" "${boot:-?}" "${worst}" "${slow}" "$st" "${cf:-?}" "${rf:-?}" >> "$OUT"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$PROFILE" "$i" "$desk" "$ctx" "$sp" "${bat:-?}" "${boot:-?}" "${worst}" "${slow}" "$st" "${cf:-?}" "${rf:-?}" "${bin:-?}" "${cache:-?}" >> "$OUT"
 done
 
 stop_win

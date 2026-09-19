@@ -20,6 +20,53 @@ $script:MSLogs    = Join-Path $script:MSRoot 'logs'
 $script:MSPidFile = Join-Path $script:MSRoot 'server.pid'
 $script:MSExe     = Join-Path $script:MSBin 'llama-server.exe'
 
+# ---- disk-backed prompt cache -------------------------------------------
+# Requires llama.cpp carrying upstream PR 28092 ("server : add --cache-dir for a persistent prompt
+# cache", unmerged and unreviewed upstream). The pinned PREBUILT above has no --cache-dir, so
+# serve.ps1 probes the binary it is about to exec and records the truth in its summary line rather
+# than claiming a configuration that did not boot.
+#
+# SIZING, measured on this box with the production q4 profile on CUDA: entry = ~448 MiB fixed +
+# ~46.1 KiB per cached token, fit from two points (704 and 30,400 tokens). Individual checkpoints
+# measured 149.8 MiB and 240-243 MiB; what makes a real full-context entry 6-16 GiB is the
+# checkpoint COUNT, which is exactly what -ctxcp/-cms bound below. Projecting the law onto a 137k or
+# 196k session is arithmetic, not a measurement. The save is SYNCHRONOUS at ~0.93-0.96 s per GiB and
+# is charged to the NEXT request.
+$script:MSCacheDir    = Join-Path $script:MSRoot 'cache'   # serve.ps1 appends a full identity leaf
+$script:MSCacheMaxMiB = 65536   # 64 GiB per identity dir; ~13 GiB entries means ~4-5 of them
+
+# ---- checkpoint budget ---------------------------------------------------
+# An entry is state + checkpoints, and on this profile a checkpoint is ~150-240 MiB for short spans
+# and ~1.1 GiB at 196,608 context, so the checkpoint knobs - not prompt length - dominate both disk
+# and the synchronous write. Measured on the live q3 server with real pi sessions:
+#   upstream defaults 32 / 8192 : entries 9.5 and 15.9 GiB, worst update stall 49.9 s, 31.6 GiB total
+#   9 / 20480                  : entries 6.2 and 7.9  GiB, worst update stall 19.4 s, 14.2 GiB total
+#   12 / 16384 (current)       : denser coverage than the above at modest size cost; not yet tabulated
+#
+# WHAT SPACING CANNOT DO, measured: prompt processing creates no checkpoints inside the prompt. A
+# 23,731-token synthetic prefill produced exactly one checkpoint, at n_tokens = 42 (149.8 MiB), and
+# the next two appeared only after generation (23,221 and 23,471, ~240 MiB each). The spread of
+# checkpoints across a real session (19,894 / 43,960 / 67,506 at -cms 20480) is where DECODE walked,
+# not a grid - so no -cms value can place a checkpoint under pi's ~19,517-token shared system-prompt
+# boundary unless some session has already generated there. A brand-new session therefore pays full
+# prefill once (~94k tokens, ~105 s measured); the tier makes every RETURN cheap (77,009 and 102,311
+# tokens reused, f_keep = 1.000) and that is the win it actually delivers.
+#
+# Spacing is also reuse granularity: a hit lands on the last checkpoint before divergence, so the
+# tail past the newest checkpoint is re-prefilled (measured 2,577-4,649 tokens at 20,480 spacing).
+$script:MSCtxcp = 12       # --ctx-checkpoints / -ctxcp   (llama.cpp default: 32)
+$script:MSCms   = 16384    # --checkpoint-min-step / -cms (llama.cpp default: 8192)
+
+# The patched build is the DEFAULT binary (serve.ps1 falls back to the prebuilt only when the
+# patched one is absent) because it is the only one with --cache-dir. $script:MSExe stays the pinned
+# prebuilt path so install-windows.ps1 keeps describing the release track it downloads.
+# Consequence, stated rather than hidden: a default boot is NOT the b11034 build that the ceilings
+# and splits below were measured on, so serve.ps1 records which binary ran as BIN=<parent-dir> and
+# the harness carries it in its rows.
+# Source: https://github.com/nazerim/llama.cpp-disk-cache branch disk-cache-patch (PR 28092 applied
+# on 911f6cd, unmodified). Recipe and measurements in win/README.md and that repo's FORK.md.
+$script:MSExePatched = Join-Path $script:MSRoot 'llama-cuda28092\llama-server.exe'
+
 # Build this whole track is pinned to. Same commit as the WSL tarball (verified: both
 # report build 11034 / commit dc85f89c7), so every flag and sampler default matches.
 $script:MSBuild = 'b11034'
@@ -117,6 +164,15 @@ function Resolve-MSApiKey {
         if ($v) { return [pscustomobject]@{ Value = $v; Scope = $scope } }
     }
     return $null
+}
+
+# One shared probe, so serve.ps1's gate and check.ps1's report cannot drift apart.
+function Test-MSFlagSupport {
+    param([string]$Exe, [string]$Flag)
+    if (-not (Test-Path $Exe)) { return 'exe absent' }
+    $t = (Get-MSNative -Exe $Exe -Arguments @('--help')) -join "`n"
+    if ($t -match ('(?m)^\s*' + [regex]::Escape($Flag))) { return 'supported' }
+    return ('NO (no {0} in --help)' -f $Flag)
 }
 
 function Get-MSNative {
