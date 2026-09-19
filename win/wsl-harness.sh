@@ -64,7 +64,10 @@ wait_ready() {
     t=$(( ( $(date +%s%N) - t0 ) / 1000000000 ))
     h=$(curl -s -m 5 "$BASE/health" 2>/dev/null)
     case "$h" in
-      *'"status":"ok"'*) echo "$t"; return 0 ;;
+      # Loose on purpose, and identical to start.ps1's own test: llama.cpp's health body is
+      # {"status":"ok"} today, but an exact-substring match here would turn any formatting change
+      # into a full-budget FAIL row for every Windows-side boot.
+      *'"ok"'*) echo "$t"; return 0 ;;
       *'Loading model'*|*'loading'*) : ;;
     esac
     # A dead process answers nothing at all; distinguish "still loading" (some HTTP answer) from
@@ -76,8 +79,20 @@ wait_ready() {
   done
 }
 
-# stop_win — synchronous stop; safe to call when nothing is running.
-stop_win() { win_run "$WINSCRIPTS\\stop.ps1" 90 >/dev/null 2>&1; sleep 3; }
+# stop_win — synchronous stop that FAILS LOUDLY. A stop that silently failed leaves the previous
+# server answering health, and every measurement after it describes the wrong boot (see
+# assert_identity). stop.ps1 now exits non-zero when anything of ours survives; propagate it.
+stop_win() {
+  local out rc
+  out=$(win_run "$WINSCRIPTS\\stop.ps1" 90 2>&1); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "stop_win: stop.ps1 reported failure (exit $rc) - refusing to measure on top of it:" >&2
+    printf '%s\n' "$out" | tail -4 | sed 's/^/    /' >&2
+    return 1
+  fi
+  sleep 3
+  return 0
+}
 
 # gpu_free — "free3080 free5070" in MiB from the WSL side. Both nvidia-smi views read the same
 # host driver, and the 400/240 thresholds were defined from this side, so the numbers stay
@@ -89,6 +104,47 @@ gpu_free() {
 gpu_used() {
   read -r u3080 u5070 < <(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | tr '\n' ' ')
   echo "${u3080:-?} ${u5070:-?}"
+}
+
+# prof_summary <dry-output> — pull fields out of serve.ps1's summary line ONLY.
+# Anchored to "^P=" on purpose. serve.ps1 also prints a clamp note ("note: CTX=221184 exceeds
+# the ceiling in force (196608)..."), and win_run merges stdout with stderr, so an unanchored
+# grep -oE 'CTX=[0-9]+' picks the REQUESTED size and records a SAFE row for a context that never
+# booted. That was reproduced: EXTRA="-Ctx 221184" wrote 221184 while the exec line said -c 196608.
+# The Linux twin is immune only because serve.sh sends that note to stderr and stability.sh pipes
+# with 2>/dev/null - the same trap, hidden by plumbing. So: parse the record, not the chatter.
+prof_summary() {
+  grep -aE '^P=.* -> CTX=[0-9]+' <<<"$1" | tail -1
+}
+prof_field() { prof_summary "$1" | sed -nE "s/.*[ =]$2=([A-Za-z0-9.,/-]+).*/\1/p" | head -1; }
+
+# assert_identity <alias> <ctx> <log> — prove the answering server is the one just launched.
+# Nothing else in the pipeline can tell a fresh boot from a stale server that survived a failed
+# stop: llama.cpp answers health:ok identically, and it IGNORES the model name in requests, so a
+# wrong-profile server produces a plausible-looking SAFE row about a configuration that is not
+# running. win/README.md documents exactly this happening and being caught by a human reading the
+# launcher's output. This makes it structural instead.
+assert_identity() {
+  local want_alias="$1" want_ctx="$2" body id nctx
+  body=$(api_get /v1/models)
+  if [ -z "$body" ]; then echo "IDENTITY: /v1/models unreadable (auth or server down)" >&2; return 1; fi
+  read -r id nctx < <(printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    m = json.load(sys.stdin)["data"][0]
+    print(m.get("id", ""), (m.get("llama") or m.get("meta", {})).get("n_ctx", ""))
+except Exception:
+    print("")')
+  if [ -n "$want_alias" ] && [ "$id" != "$want_alias" ]; then
+    echo "IDENTITY: server advertises '$id', this round expected '$want_alias' - a stale or wrong-profile server is answering" >&2
+    return 1
+  fi
+  if [ -n "$want_ctx" ] && [ "$nctx" != "$want_ctx" ]; then
+    echo "IDENTITY: server n_ctx=$nctx, this round expected $want_ctx - the boot did not get the configuration being recorded" >&2
+    return 1
+  fi
+  echo "  identity ok: $id @ n_ctx $nctx"
+  return 0
 }
 
 # host_headroom — "ram_free_gb commit_free_gb" from the Windows side. Synchronous is safe here:

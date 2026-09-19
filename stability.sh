@@ -26,7 +26,10 @@ for i in $(seq 1 "$N"); do
   Q="$PROFILE" timeout 400 ./start.sh >"/tmp/stab-$i.log" 2>&1
   if ! grep -q ready "/tmp/stab-$i.log"; then
     echo "  BOOT FAILED"; tail -2 "/tmp/stab-$i.log" | sed 's/^/    /'
-    printf '%s\t%s\t%s\t%s\t-\t-\tBOOTFAIL\n' "$i" "$desk" "$ctx" "$sp" >> "$OUT"; continue
+    # 8 fields for an 8-column header. This row was writing 7, starting with $i, so a failed boot
+    # landed as profile=<round>, round=<desktop>, ... and status=<missing> - the verdict count only
+    # survived because it reads $NF and the last field happened to be BOOTFAIL.
+    printf '%s\t%s\t%s\t%s\t%s\t-\t-\tBOOTFAIL\n' "$PROFILE" "$i" "$desk" "$ctx" "$sp" >> "$OUT"; continue
   fi
   res=$(MODEL="$alias_model" timeout 900 python3 margin-check.py 2>&1)
   worst=$(grep -oE 'WORST-CASE FREE = [0-9]+' <<<"$res" | grep -oE '[0-9]+')

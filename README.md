@@ -99,10 +99,12 @@ Field names must be llama.cpp's, not OpenAI's or intuition's - `sampling-check.p
 the server answers **200 and silently ignores** unrecognised keys (`repetition_penalty`,
 `totally_bogus_key`), so a misspelling is invisible rather than an error. Use **`repeat_penalty`**.
 
-The same block is carried on all three **`llama.win`** entries — the second provider now in
+The same block is carried on all four **`llama.win`** entries — the second provider now in
 `pi-models.example.json` and `~/.pi/agent/models.json`, pointing at the native-Windows server —
 so both OSes sample identically. It was produced by deep-cloning `llama.local` (baseUrl and the
-display names excepted), which is why the two cannot drift apart. See
+display names excepted), which is why the two cannot drift apart. Because `settings.json` carries
+an `enabledModels` allowlist, all four `llama.win/...` ids had to be added there too — without
+that the provider is configured but invisible in `/model`. See
 [win/README.md](win/README.md#pointing-pi-at-it).
 
 What actually changes vs llama.cpp defaults: `temperature/top_p/top_k` are already read from
@@ -366,7 +368,7 @@ caught). Expected output row:
 | pi id | `Q=` profile | contextWindow |
 |---|---|---|
 | `qwen3.8-27b` | `q3` (Q3_K_XL) | 196,608 |
-| `qwen3.8-27b-4s` | `q4s` (Q4_K_S) | 163,840 |
+| `qwen3.8-27b-4s` | `q4s` (Q4_K_S) | 155,648 |
 | `qwen3.8-27b-4xl` | `q4` (Q4_K_XL) | 122,880 |
 
 **The mismatch is silent, in one dangerous direction.** Measured: llama.cpp accepts *any*

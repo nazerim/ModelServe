@@ -33,15 +33,23 @@ SPLIT="${SPLIT:-}"
 OUT="${OUT:-iq-ladder-win.tsv}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"
 
-echo "target: $BASE  profile=$Q split=${SPLIT:-profile default}"
 if [ -z "$CTX_MAX_KNOWN" ]; then
-  # Ask the profile what it thinks its ceiling is - one source of truth (config.ps1).
-  CTX_MAX_KNOWN=$(win_run "$WINSCRIPTS\\serve.ps1" 120 -P "$Q" -Tier max ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} -DryRun 2>/dev/null |
-                  sed -nE 's/.*CTX=([0-9]+).*/\1/p' | head -1)
-  [ -n "$CTX_MAX_KNOWN" ] || CTX_MAX_KNOWN=196608
+  # Ask the profile what it thinks its ceiling is - one source of truth (config.ps1) - parsed from
+  # the anchored summary line only, for the reason documented in prof_field().
+  dry=$(win_run "$WINSCRIPTS\\serve.ps1" 120 -P "$Q" -Tier max ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} -DryRun 2>/dev/null)
+  CTX_MAX_KNOWN=$(prof_field "$dry" CTX)
+  LADDER_ALIAS=$(prof_field "$dry" ALIAS); LADDER_BATCH=$(prof_field "$dry" BATCH); LADDER_SPLIT=$(prof_field "$dry" SPLIT)
+  if [ -z "$CTX_MAX_KNOWN" ]; then
+    echo "  guard could not be read from serve.ps1 -DryRun; falling back to 196608" >&2
+    CTX_MAX_KNOWN=196608; LADDER_ALIAS=qwen3.8-27b; LADDER_BATCH=1024/256; LADDER_SPLIT=17.4,7.7
+    echo "ceiling guard: $CTX_MAX_KNOWN (FALLBACK, not from the profile)" >&2
+  else
+    echo "ceiling guard: $CTX_MAX_KNOWN (from profile $Q; raise with CTX_MAX_KNOWN=... only when measured)"
+  fi
 fi
-echo "ceiling guard: $CTX_MAX_KNOWN (from the profile; raise with CTX_MAX_KNOWN=... only when measured)"
-printf 'quant\tctx\tstatus\tvram_5070Ti\tvram_3080\tfree_5070Ti\tfree_3080\tboot_s\ttok_s\n' > "$OUT"
+[ -n "${LADDER_ALIAS:-}" ] || { dry=$(win_run "$WINSCRIPTS\\serve.ps1" 120 -P "$Q" -Tier max ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} -DryRun 2>/dev/null); LADDER_ALIAS=$(prof_field "$dry" ALIAS); LADDER_BATCH=$(prof_field "$dry" BATCH); LADDER_SPLIT=$(prof_field "$dry" SPLIT); }
+echo "target: $BASE  profile=$Q split=${SPLIT:-${LADDER_SPLIT:-profile default}} alias=${LADDER_ALIAS:-?} batch=${LADDER_BATCH:-?}"
+printf 'profile\tctx\tsplit\tbatch\tstatus\tvram_5070Ti\tvram_3080\tfree_5070Ti\tfree_3080\tboot_s\ttok_s\n' > "$OUT"
 
 for c in $SIZES; do
   if [ "$c" -gt "$CTX_MAX_KNOWN" ] && [ -z "${FORCE:-}" ]; then
@@ -50,29 +58,32 @@ for c in $SIZES; do
     echo "       display driver with it. Re-run with FORCE=1 only if you accept that." >&2
     break
   fi
-  stop_win
+  stop_win || { echo "  SKIP $c: the previous server did not stop cleanly" >&2; continue; }
   log="/tmp/ladder-$c.log"; : > "$log"
   args=(-P "$Q" -Ctx "$c" -Ceil "$c" -TimeoutSec "$BOOT_TIMEOUT" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
-  [ -n "$SPLIT" ] && args+=(-Split "$SPLIT")
   # -Ceil is ALWAYS passed, equal to the size being tested. Two failure modes it closes: the
   # profile clamp quietly booting 196,608 and reporting a PASS for a 225,280 test, and the same
   # lie in reverse if a raised CTX_MAX_KNOWN outran config.ps1's ceiling. The ladder asks for
   # exactly the size it is about to measure, so the TSV cannot describe a different boot.
   [ -n "$SPLIT" ] && args+=(-Split "$SPLIT")
-  if [ "${FORCE:-}" = "1" ] && [ "$c" -gt "$CTX_MAX_KNOWN" ]; then
-    echo "  FORCE=1: $c is past the recorded ceiling ($CTX_MAX_KNOWN) - UNMEASURED ground, watch for device-not-ready"
-  fi
+  case "${FORCE:-}" in 1|true|yes) if [ "$c" -gt "$CTX_MAX_KNOWN" ]; then
+      echo "  FORCE: $c is past the recorded ceiling ($CTX_MAX_KNOWN) - UNMEASURED ground, watch for device-not-ready"
+    fi ;;
+  esac
   win_launch "$log" "$WINSCRIPTS\\start.ps1" "${args[@]}"
   printf '  CTX=%s booting...' "$c"
   if boot=$(wait_ready "$BOOT_TIMEOUT"); then
     echo " ready in ${boot}s"
+    # Same proof as the stability harness: the answering server must be THIS boot. A stop that
+    # quietly failed would otherwise let a stale server turn every size into "OK".
+    assert_identity "${LADDER_ALIAS:-}" "$c" || { echo "  CTX=$c IDENTITY-FAIL (not recorded as a pass)"; continue; }
     read -r f3080 f5070 <<<"$(gpu_free)"; read -r u3080 u5070 <<<"$(gpu_used)"
-    sp=$(timeout 200 python3 - "$Q" <<'PY' 2>/dev/null || echo ERR
+    sp=$(MODEL="${LADDER_ALIAS:-qwen3.8-27b}" timeout 200 python3 - "$Q" <<'PY' 2>/dev/null || echo ERR
 import json, os, time, urllib.request
 B = os.environ["BASE"]; K = os.environ.get("OMLX_API_KEY", "")
 h = {"Content-Type": "application/json"}
 if K: h["Authorization"] = "Bearer " + K
-p = {"model": "qwen3.8-27b", "temperature": 0, "max_tokens": 400,
+p = {"model": os.environ.get("MODEL", "qwen3.8-27b"), "temperature": 0, "max_tokens": 400,
      "messages": [{"role": "user", "content": "Describe in detail how a paged KV cache works."}]}
 t = time.time()
 d = json.load(urllib.request.urlopen(urllib.request.Request(B + "/v1/chat/completions",
@@ -81,13 +92,13 @@ print(f"{d['usage']['completion_tokens']/(time.time()-t):.1f}")
 PY
 )
     echo "  OK   5070Ti used=$u5070 free=$f5070 | 3080 used=$u3080 free=$f3080 | ${sp} tok/s"
-    printf '%s\t%s\tOK\t%s\t%s\t%s\t%s\t%s\t%s\n' "$Q" "$c" "$u5070" "$u3080" "$f5070" "$f3080" "$boot" "$sp" >> "$OUT"
+    printf '%s\t%s\t%s\t%s\tOK\t%s\t%s\t%s\t%s\t%s\t%s\n' "$Q" "$c" "${LADDER_SPLIT:-?}" "${LADDER_BATCH:-?}" "$u5070" "$u3080" "$f5070" "$f3080" "$boot" "$sp" >> "$OUT"
   else
     echo " FAIL after ${boot}s"
     read -r f3080 f5070 <<<"$(gpu_free)"; read -r u3080 u5070 <<<"$(gpu_used)"
     echo "       5070Ti used=$u5070 free=$f5070 | 3080 used=$u3080 free=$f3080"
-    tail -4 "$log" | tr -d '\0' | grep -iE 'out of memory|failed to allocate|device not ready|SIGABRT|NOT READY|no-answer' | head -2 | cut -c1-140 | sed 's/^/       /'
-    printf '%s\t%s\tFAIL\t%s\t%s\t%s\t%s\t%s\t-\n' "$Q" "$c" "$u5070" "$u3080" "$f5070" "$f3080" "${boot}" >> "$OUT"
+    tail -4 "$log" | tr -d '\0\r' | grep -iE 'out of memory|failed to allocate|device not ready|SIGABRT|NOT READY|no-answer' | head -2 | cut -c1-140 | sed 's/^/       /'
+    printf '%s\t%s\t%s\t%s\tFAIL\t%s\t%s\t%s\t%s\t%s\t-\n' "$Q" "$c" "${LADDER_SPLIT:-?}" "${LADDER_BATCH:-?}" "$u5070" "$u3080" "$f5070" "$f3080" "${boot}" >> "$OUT"
     break
   fi
 done

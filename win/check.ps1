@@ -10,8 +10,11 @@
     * TDR resets the GPU if a submission blocks too long (WDDM only; WSL hides this)
     * a sleeping machine takes the server and both contexts with it
 
-      .\check.ps1
-      .\check.ps1 -Port 8000
+      check.cmd                # default port 8000
+      check.cmd -Port 9000
+
+  (check.cmd exists because LocalMachine execution policy on this box is AllSigned, which refuses
+  a bare ".\check.ps1"; cmd.exe is not subject to ExecutionPolicy.)
 #>
 [CmdletBinding()]
 param([int]$Port = 8000)
@@ -31,9 +34,16 @@ Line 'build pin' ($script:MSBuild + ' / CUDA ' + $script:MSCuda)
 
 Section 'binaries'
 if (Test-Path $script:MSExe) {
-    Set-Location $script:MSBin
+    # No Set-Location here: this script promises to change nothing, and a bare Set-Location
+    # persists in the caller's session after it returns. The exe is called by absolute path, and
+    # serve.ps1 has always done exactly that from C:\ - Windows resolves an app's own directory
+    # for its DLLs regardless of cwd.
     $v = (Get-MSNative -Exe $script:MSExe -Arguments @('--version')) -join "`n"
-    Line 'llama-server' (($v | Select-String 'build|commit|version' | Select-Object -First 1)).ToString().Trim()
+    $verLine = ($v | Select-String 'build|commit|version' | Select-Object -First 1)
+    # Guarded: ToString() on an empty Select-String result is a null-method call, and config.ps1
+    # runs this whole file under ErrorActionPreference='Stop' - so a version string that changes
+    # format would abort the preflight, on the one path where the preflight matters most.
+    if ($verLine) { Line 'llama-server' "$verLine".Trim() } else { Line 'llama-server' 'ran, but no version line matched' 'warn' }
     foreach ($d in @('ggml-cuda.dll', 'cublasLt64_13.dll', 'cudart64_13.dll', 'llama-common.dll')) {
         $f = Join-Path $script:MSBin $d
         if (Test-Path $f) { Line $d 'present' 'ok' }
@@ -111,8 +121,10 @@ if ($addr) {
     # NOT proof of breakage - probe-from-wsl.sh is the authority, this is only inventory.
     $rule = $null
     try {
-        $rule = Get-NetFirewallPortFilter -Protocol TCP -ErrorAction SilentlyContinue |
-            Where-Object { $_.LocalPort -eq $Port } | ForEach-Object { $_ | Get-NetFirewallRule -ErrorAction SilentlyContinue }
+        # By display name (the exact string install-windows.ps1 creates) rather than enumerating
+        # every TCP port filter in the firewall store and re-opening a rule per hit: this is a
+        # after-every-reboot ritual, and the sweep was the slowest line in the file.
+        $rule = Get-NetFirewallRule -DisplayName 'ModelServe llama-server (WSL only)' -ErrorAction SilentlyContinue
     } catch { Line 'firewall rules' 'cannot enumerate (run elevated to check)' 'warn' }
     if ($rule) { $rule | ForEach-Object { Line 'rule' ('{0} enabled={1} action={2}' -f $_.DisplayName, $_.Enabled, $_.Action) } }
     elseif ($null -eq $rule) { Line ('rule for TCP ' + $Port) 'none - fine if probe-from-wsl.sh says OPEN; add one only if it does not' }

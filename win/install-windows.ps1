@@ -92,7 +92,11 @@ foreach ($asset in $script:MSAssets) {
     $dest = Join-Path $dlDir $asset
     if ($Force -and (Test-Path $dest)) { Remove-Item $dest -Force }
     $have = if (Test-Path $dest) { (Get-Item $dest).Length } else { 0 }
-    if ($have -eq $want[$asset]) {
+    # ContainsKey first: if an asset is ever added to $MSAssets without a size here, $want[$asset]
+    # is $null and PowerShell coerces the right operand to the left one's type, so a 0-byte or
+    # absent file would satisfy the cache check and skip the download - then fail confusingly
+    # inside Expand-Archive three steps later.
+    if ($want.ContainsKey($asset) -and $have -eq $want[$asset]) {
         Info ("cached ok   {0}  {1:N0} bytes" -f $asset, $have)
     } else {
         $url = "https://github.com/ggml-org/llama.cpp/releases/download/$($script:MSBuild)/$asset"
@@ -176,7 +180,7 @@ if ($files.Count -eq 0) {
         if ($rc.ExitCode -gt 7) { Bad "robocopy failed with exit code $($rc.ExitCode) - see $script:MSLogs\robocopy.log"; exit 1 }
         $dstLen = if (Test-Path $dst) { (Get-Item $dst).Length } else { -1 }
         if ($dstLen -ne $srcLen) { Bad ("size mismatch after copy: {0} vs source {1}" -f $dstLen, $srcLen); exit 1 }
-        Info ("verified       {0}  {1:N2} GiB matches the ext4 original" -f $f, ($dstLen / 1GB))
+        Info ("size-matched   {0}  {1:N2} GiB - same length as the ext4 original (a truncation check, not a hash)" -f $f, ($dstLen / 1GB))
     }
 }
 
@@ -239,16 +243,20 @@ if ($RegisterTask) {
             -Description 'Starts the native llama-server (ModelServe)' | Out-Null
         Info "registered: $taskName (at logon, current user)"
     }
-} else { Info "not registering a task (-RegisterTask); start it with start.ps1" }
+} else { Info "not registering a task (-RegisterTask); start it with start.cmd" }
 
 # ---- 6. verify ------------------------------------------------------------
 Step 6 'verify'
 if ($DryRun) { Info "DryRun - nothing launched; re-run without -DryRun to install"; exit 0 }
 Set-Location $script:MSBin
  Info (((Get-MSNative -Exe $script:MSExe -Arguments @('--version')) | Select-Object -Last 2) -join ' ')
-$devs = (Get-MSNative -Exe $script:MSExe -Arguments @('--list-devices')) | Select-String 'CUDA\d'
-$devs | ForEach-Object { Info $_.ToString().Trim() }
-if ($devs -join ' ' -match "CUDA0:.*$([regex]::Escape($script:MSCuda0MustContain))") {
+$devs = Get-MSNative -Exe $script:MSExe -Arguments @('--list-devices')
+$devLines = ($devs | Select-String 'CUDA\d') -join "`n"
+if ($devLines) { $devLines -split "`n" | ForEach-Object { Info $_.Trim() } }
+# Join with NEWLINES, not spaces. With a space, "CUDA0:.*5070 Ti" matches across lines, so the
+# check stayed true even when CUDA0 was the 3080 - the exact inversion this guard exists to catch.
+# check.ps1 and serve.ps1 already join correctly; this copy had drifted.
+if ($devLines -match "CUDA0:.*$([regex]::Escape($script:MSCuda0MustContain))") {
     Info "device order matches the splits in config.ps1"
 } else {
     Bad 'CUDA0 is NOT the 5070 Ti - the splits in config.ps1 are wrong for this machine. Re-derive before serving.'
@@ -256,9 +264,9 @@ if ($devs -join ' ' -match "CUDA0:.*$([regex]::Escape($script:MSCuda0MustContain
 
 Write-Host ""
 Write-Host "next steps:" -ForegroundColor Green
-Write-Host "  1. power limits are already applied by install-power-limits.cmd (150W / 250W) - check.ps1 re-reads them"
-Write-Host "  2. .\check.ps1                      # preflight: devices, TDR, sleep, key, rule"
-Write-Host "  3. .\start.ps1                      # boots q3 at the WSL-derived ceiling; re-measure it here"
+Write-Host "  1. power limits are already applied by install-power-limits.cmd (150W / 250W) - check.cmd re-reads them"
+Write-Host "  2. .\check.cmd                       # preflight: devices, TDR, sleep, key, rule"
+Write-Host "  3. .\start.cmd                       # boots q3 at the profile ceiling; re-measure it here"
 Write-Host "  4. from WSL:  win/probe-from-wsl.sh   # proves the network path + auth end to end"
 Write-Host ("  5. pi baseUrl for the Windows entries: http://{0}:{1}/v1" -f $(if ($addr) { $addr.IP } else { '<wsl-host-ip>' }), $Port)
 Write-Host "     (that IP is the WSL adapter address and CAN change across boots - probe-from-wsl.sh"

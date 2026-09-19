@@ -52,9 +52,9 @@ mode of getting that wrong is a silently borderline server. So config.ps1 now ke
 apart: **MSProfiles** = the four bootable configurations, **MSTiers** = small/medium/large/max,
 which pick a size *within* a profile.
 
-    C:\ModelServe\win\start.ps1                    # q3, the default
-    C:\ModelServe\win\start.ps1 -P q3l             # deep context, correct batch automatically
-    C:\ModelServe\win\start.ps1 -P q4 -Tier medium
+    C:\ModelServe\win\start.cmd                    # q3, the default
+    C:\ModelServe\win\start.cmd -P q3l             # 225,280 ctx, correct batch automatically
+    C:\ModelServe\win\start.cmd -P q4 -Tier medium
 
 `-Q` remains a synonym for `-P` so the WSL habit of "Q=q4s TIER=medium" works on both sides.
 The q3l batch is applied only when nobody overrode it (an explicit -Batch or $env:BATCH wins),
@@ -69,9 +69,24 @@ not advertise it.
     \\wsl.localhost\Ubuntu-26.04\home\naz\Projects\ModelServe\win\install-windows.cmd
     :: afterwards, always from the NTFS copy (does not depend on a distro being up)
     C:\ModelServe\win\install-windows.cmd
-    C:\ModelServe\win\check.ps1        :: read-only preflight, run it after every reboot
-    C:\ModelServe\win\start.ps1        :: detached; waits for the load; prints the baseUrl
-    C:\ModelServe\win\stop.ps1         :: stops the tree and SHOWS the VRAM coming back
+    C:\ModelServe\win\check.cmd          :: read-only preflight, run it after every reboot
+    C:\ModelServe\win\start.cmd          :: detached; waits for the load; prints the baseUrl
+    C:\ModelServe\win\stop.cmd           :: stops the tree and SHOWS the VRAM coming back
+    C:\ModelServe\win\serve.cmd          :: foreground, for watching the load trace live
+
+**Every entry point is a .cmd, not a .ps1, and that is not stylistic.** LocalMachine execution
+policy on this box is AllSigned, so a bare `.\check.ps1` is refused with "is not digitally
+signed" (verified, not assumed). cmd.exe is not a script and is not subject to ExecutionPolicy,
+and the wrappers pass `-ExecutionPolicy Bypass`, which sets the Process scope — and Process
+outranks LocalMachine (precedence: MachinePolicy > UserPolicy > Process > CurrentUser >
+LocalMachine). So nothing is loosened system-wide and no policy is changed. This is the same
+pattern the power-limit task already uses; the WSL-side harness reaches the .ps1 files directly
+by passing that same Bypass flag itself, which is why ladder and stability runs work from WSL.
+
+Code-signing the .ps1 files was considered and rejected: it needs a self-signed certificate
+imported into TrustedPublisher (a trust-store change, to work around a policy the wrapper already
+sidesteps), and every edit invalidates the signature, so the installer would have to re-sign on
+every deploy and any hand-edit on the machine would silently break the next run.
 
 Knob vocabulary matches serve.sh: `-P|-Q q3|q3l|q4s|q4 -Tier small|medium|large|max -Ctx -Split
 -Kv -Mm -Ngl -Batch -Ubatch -MinP -Port -Bind -Spec -Ceil -Model`. `-DryRun` on serve.ps1 and
@@ -168,10 +183,12 @@ existing two scripts now accept a remote target:
 
 - **wsl-harness.sh** — shared primitives, sourced by the other two: `win_run` (synchronous,
   captured through a file), `win_launch` (fire-and-forget), `wait_ready` (local curl poll),
-  `stop_win`, `gpu_free`/`gpu_used`, `host_headroom`, `api_get`
+  `stop_win` (fails loudly), `prof_field` (parse serve.ps1's summary line ONLY), `assert_identity`
+  (prove the answering server is this boot), `gpu_free`/`gpu_used`, `host_headroom`, `api_get`
 - **ladder-from-wsl.sh** — context ladder, twin of `../iq-ladder.sh` → `iq-ladder-win.tsv`.
-  Refuses sizes above `CTX_MAX_KNOWN` (196,608) unless `FORCE=1`, because 204,800 is the
-  documented `device not ready` cliff and natively that can take the display driver with it
+  Refuses sizes above the profile's own recorded ceiling (`CTX_MAX_KNOWN`, derived from
+  `serve.ps1 -DryRun` — 196,608 for q3, 225,280 for q3l) unless `FORCE` is set, because 204,800 is
+  the documented `device not ready` cliff and natively that can take the display driver with it
 - **stability-from-wsl.sh** — N identical boots + margin-under-load, twin of `../stability.sh`
   → `stability-win-q3.tsv`, same SAFE/MARGINAL/UNSAFE verdict
 - `../test.sh` takes `BASE=...` (and its embedded python now sends the bearer key, which it
@@ -212,10 +229,10 @@ entry's contextWindow equals the CTX its profile resolves to, so nothing over-de
   default gateway. probe-from-wsl.sh and check.ps1 both re-print it.
 - api openai-completions, apiKey "$OMLX_API_KEY" (pi expands the env reference; the Windows
   User-scope LLAMA_API_KEY holds the same value), and the *same* compat block.
-- the same three model ids — they have to be, because the server advertises whatever
-  --alias it booted with — with display names suffixed [win], same contextWindow
-  (196,608 / 155,648 / 122,880), maxTokens 32768, and the same samplingParams including
-  min_p 0, so pi and non-pi clients keep sampling identically across both OSes.
+- the same model ids as `llama.local` — they have to be, because the server advertises whatever
+  --alias it booted with — with display names suffixed [win], plus a fourth entry for **q3l**
+  (`qwen3.8-27b-l`, contextWindow 225,280). Each entry's contextWindow equals the CTX its profile
+  resolves to, checked against `serve.ps1 -DryRun` rather than against these notes.
 
 Verified two ways: a structural diff shows the two providers identical apart from baseUrl and
 name; and live, a q3 boot reports id qwen3.8-27b with **meta.n_ctx 196,608** — exactly what the
@@ -249,8 +266,9 @@ load suite once and then resetting the host on an identical repeat. Server-side 
 during these runs read **52.7-54.2 tok/s** (`slot print_timing ... tg`), above the 46-50 the
 WSL setup reported. (`stability-win-q3.tsv`)
 
-**q4s and q4, once their GGUFs were copied to NTFS** (both byte-verified against the ext4
-originals by the installer):
+**q4s and q4, once their GGUFs were copied to NTFS** (both **size-matched** against the ext4
+originals by the installer — it compares byte *lengths*, not hashes, so it catches the realistic
+9P/robocopy truncation but is not a content check):
 
 | profile | CTX | split | rounds | boot | worst-case free | slowest gen | verdict |
 |---|---|---|---|---|---|---|---|
@@ -355,10 +373,13 @@ Readings, in order of usefulness:
   the native wall. ladder-from-wsl.sh also now always passes -Ceil equal to the size under test,
   so the TSV can never describe a clamped boot that differs from the requested one.
 
-Recipe, if you want it as a mode rather than a manual pair — the clamp has to be lifted in the
-same call or the size silently falls back:
+That is why 225,280 became a **profile** (q3l) rather than a number to remember: the ceiling, the
+prompt batch and the advertised alias move together, so nobody can get a deep context with the
+production batch — which is the MARGINAL combination measured above. The manual pair is still how
+you probe an as-yet-unmeasured size, and -Ceil must be lifted in the same call or the size
+silently falls back and the result describes a different boot:
 
-    C:\ModelServe\win\start.ps1 -Ctx 221184 -Ceil 221184 -Batch 512 -Ubatch 128
+    C:\ModelServe\win\start.cmd -P q3l
     EXTRA="-Ctx 221184 -Ceil 221184 -Batch 512 -Ubatch 128" ./win/stability-from-wsl.sh 3 q3
 
 Two tool defects this experiment found and fixed: serve.ps1 had no way to raise its own ceiling,
@@ -375,5 +396,10 @@ X1's authoritative pp line was lost that way.
 * Natural next measurements: the q4/q4s ladders (natively the 3080 is the binding card, so their
   ext4 ceilings may be conservative) and a split sweep — the only way to know whether that extra
   slack is real capacity or just a different card holding it.
-* Nothing is committed to git yet.
+* Committed: 93d218f (the win/ track) and this follow-up fixing a code review's findings — the
+  clamp note being parsed as the record (a SAFE row could be written for a context that never
+  booted), no proof that the answering server was the one just launched, a vacuous device-order
+  check in the installer, assertions that did not cover the passthrough tail of argv, a pid file
+  that could kill a reused PID, and the .cmd wrappers that AllSigned actually requires to run
+  start/stop/check/serve.
 * The WSL server is untouched and remains the fallback; `stop.sh` on both sides is independent.

@@ -6,12 +6,14 @@
   polls /health and only then reports ready (or breaks early if the log shows an allocation
   failure, which is how a too-big CTX announces itself).
 
-  Usage:
-      .\start.ps1                                  # q3, ceiling ctx, bound to the WSL adapter IP
-      .\start.ps1 -Q q4 -Tier medium
-      .\start.ps1 -Bind loopback                   # Windows-only, no firewall/key needed
-      .\start.ps1 -WhatIf                           # show the resolved command, launch nothing
-      .\start.ps1 -TimeoutSec 600                   # first boot from a cold file cache
+  Usage (start.cmd is the policy-proof wrapper - this box is AllSigned at LocalMachine scope, so
+  a bare ".\start.ps1" is refused; see start.cmd for the reasoning):
+      .\..\start.cmd                                  # q3, ceiling ctx, bound to the WSL adapter IP
+      start.cmd -P q3l                                # 225,280 ctx + 512/128 prompt batch
+      start.cmd -P q4 -Tier medium
+      start.cmd -Bind loopback                        # Windows-only
+      start.cmd -WhatIf                               # show the resolved command, launch nothing
+      start.cmd -TimeoutSec 600                       # first boot from a cold file cache
 
   Any knob you pass is forwarded to serve.ps1; anything you omit keeps serve.ps1's default.
   Logs: C:\ModelServe\logs\server.out.log + server.err.log, PID in C:\ModelServe\server.pid.
@@ -31,16 +33,18 @@ param(
 
 $servePs1 = Join-Path $PSScriptRoot 'serve.ps1'
 $LogDir = $script:MSLogs
-if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
 $outLog = Join-Path $LogDir 'server.out.log'
 $errLog = Join-Path $LogDir 'server.err.log'
+# -WhatIf is documented as "show the resolved command, launch nothing", so the preview must not
+# create directories or read state it would otherwise act on.
+if (-not $WhatIf -and -not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
 
 # Refuse to stack a second server on top of a live one: two processes fighting over the same
 # VRAM is the fastest route to the driver reset this box is already prone to.
-if (Test-Path $script:MSPidFile) {
+if (-not $WhatIf -and (Test-Path $script:MSPidFile)) {
     $old = (Get-Content $script:MSPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($old -and (Get-Process -Id $old -ErrorAction SilentlyContinue)) {
-        Write-Host "already running as PID $old - use stop.ps1 first (or check.ps1)" -ForegroundColor Red
+        Write-Host "already running as PID $old - use stop.cmd first (or check.cmd)" -ForegroundColor Red
         exit 1
     }
 }

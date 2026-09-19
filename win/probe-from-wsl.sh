@@ -5,9 +5,13 @@
 # The whole point of the win/ track is that pi (inside WSL) talks to a server running on
 # Windows. That crosses three independent boundaries, and each one fails differently:
 #
-#   1. routing    — can WSL reach the host's vEthernet address at all?
-#   2. firewall   — Windows treats the WSL adapter as an unclassified (=> Public) network, so
-#                   inbound is dropped by default: it looks like a dead server but isn't.
+#   1. routing    - can WSL reach the host's vEthernet address at all?
+#   2. firewall   - NOT a problem on this box: measured 2026-09-19, WSL-origin traffic reaches the
+#                   host port with no inbound rule at all (the adapter is the Hyper-V-firewall
+#                   one). So a closed TCP here means routing or a dead server first, and only then
+#                   a rule - do not add a rule on theory. If one is ever needed, create it through
+#                   install-windows.cmd -Firewall, which scopes RemoteAddress to the WSL subnet;
+#                   a hand-rolled rule without -RemoteAddress opens port 8000 to the LAN.
 #   3. auth       — llama-server needs the bearer key; a 401 means the key differs between
 #                   the Windows-side LLAMA_API_KEY and pi's, which is invisible from `curl
 #                   /health` because /health is unauthenticated.
@@ -38,10 +42,10 @@ if timeout "$PATH_TIMEOUT" bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; t
   echo "tcp      OPEN"
 else
   echo "tcp      CLOSED/unreachable  <-- routing or firewall" >&2
-  echo "  server listening?  win\\check.ps1 (look at 'listener' and 'health')" >&2
-  echo "  firewall rule?     run elevated on Windows:" >&2
-  echo "    New-NetFirewallRule -DisplayName 'ModelServe llama-server (WSL only)' -Direction Inbound \\" >&2
-  echo "      -Action Allow -Protocol TCP -LocalPort $PORT -Profile Any" >&2
+  echo "  server listening?  win\\check.cmd (look at 'listener' and 'health')" >&2
+  echo "  on THIS box no inbound rule is needed for WSL-origin traffic (measured). If routing is" >&2
+  echo "  fine and it is still closed, create the scoped rule - do not hand-roll one:" >&2
+  echo "    C:\ModelServe\win\install-windows.cmd -Firewall -Port $PORT   (elevated; scopes RemoteAddress to the WSL /20)" >&2
   fail=1
 fi
 

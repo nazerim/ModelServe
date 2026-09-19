@@ -1,11 +1,19 @@
 <#
   serve.ps1  -  foreground llama-server on native Windows. Twin of ../serve.sh.
 
-  Usage (from an elevated or ordinary prompt; cmd.exe wrapper: install-windows.cmd):
-      powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1                     # q3, WSL-safe ceiling
-      powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1 -Q q4 -Tier medium
-      powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1 -DryRun             # print, don't launch
-      powershell -NoProfile -ExecutionPolicy Bypass -File .\serve.ps1 -Bind loopback      # Windows-local only
+  Usage - via the policy-proof wrapper (this box is AllSigned at LocalMachine scope, so a bare
+  ".\serve.ps1" is refused with "is not digitally signed"; cmd.exe is not subject to
+  ExecutionPolicy and -ExecutionPolicy Bypass sets Process scope, which outranks LocalMachine):
+
+      serve.cmd                                   # q3, WSL-safe ceiling, bound for WSL clients
+      serve.cmd -P q3l                            # 225,280 ctx + 512/128 batch
+      serve.cmd -P q4 -Tier medium
+      serve.cmd -DryRun                           # print the resolved command, launch nothing
+      serve.cmd -Bind loopback                    # Windows-local only, no key required
+
+  (The underlying .ps1 can still be called directly as long as Bypass is passed, which is what
+  serve.cmd does, and what the WSL-side harness scripts do: from WSL, call
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ModelServe\win\...)
 
   -Bind defaults to 'wsl': the vEthernet (WSL) adapter address, so a client inside WSL can
   reach it while the LAN cannot (0.0.0.0 is refused without a key, same policy as serve.sh).
@@ -88,7 +96,10 @@ if ($Model) {
     # WITH 512/128; the same context at the default batch measured 275 MiB at 212,992, so letting
     # the batch silently fall back would turn a SAFE profile into a borderline one.
     if ($prof.Batch -and -not $PSBoundParameters.ContainsKey('Batch') -and -not $env:BATCH) {
-        $Batch = [int]$prof.Batch; $Ubatch = [int]$prof.Ubatch
+        $Batch = [int]$prof.Batch
+        # -Ubatch is honoured independently of -Batch: a caller asking only for a smaller ubatch
+        # must not have it silently rewritten to the profile's value.
+        if (-not $PSBoundParameters.ContainsKey('Ubatch') -and -not $env:UBATCH) { $Ubatch = [int]$prof.Ubatch }
     }
 }
 
@@ -100,11 +111,15 @@ if (-not $CtxWant) {
     $tierCtx = [int]$script:MSTiers[$Tier]
     $CtxWant = if ($tierCtx) { $tierCtx } elseif ($Ceil) { $Ceil } else { 131072 }
 }
-if ($CeilReq) {
-    Write-Host ('NOTE: ceiling overridden to {0} (profile default {1}) - this size is UNMEASURED ground.' -f $Ceil, $(if ($prof) { $prof.Ceil } else { 'none' })) -ForegroundColor Magenta
+if ($CeilReq -and $prof -and ($Ceil -ne [int]$prof.Ceil)) {
+    # stderr, like serve.sh's clamp note: win_run captures both streams into one file, so an
+    # informational line must never be something a parser can mistake for the record.
+    [Console]::Error.WriteLine(('NOTE: ceiling overridden to {0} (profile default {1}) - this size is UNMEASURED ground.' -f $Ceil, $prof.Ceil))
 }
 if ($Ceil -and $CtxWant -gt $Ceil) {
-    Write-Host "note: CTX=$CtxWant exceeds the ceiling in force ($Ceil) for $Q; clamping." -ForegroundColor Yellow
+    [Console]::Error.WriteLine("note: CTX=$CtxWant exceeds the ceiling in force ($Ceil) for $Q; clamping.")
+    # The CLAMPED value is the truth about what will exec, and the summary line below is the single
+    # record the harness parses - so the record must carry 196608, not the 221184 that was asked for.
     $CtxWant = $Ceil
 }
 
@@ -129,7 +144,7 @@ switch -Regex ($Bind) {
             Write-Host "no vEthernet (WSL) adapter found - is WSL installed and running?" -ForegroundColor Red; exit 1
         }
         $BindHost = $addr.IP
-        Write-Host ("bind = {0}  ({1}, subnet {2})" -f $BindHost, $addr.Alias, $addr.Subnet) -ForegroundColor DarkGray
+        [Console]::Error.WriteLine(("bind = {0}  ({1}, subnet {2})" -f $BindHost, $addr.Alias, $addr.Subnet))
     }
     '^loopback$|^127' { $BindHost = '127.0.0.1' }
     default           { $BindHost = $Bind }
@@ -176,12 +191,24 @@ switch ($Mm) {
     default { Write-Host "Mm must be cpu|3080|cuda0" -ForegroundColor Red; exit 2 }
 }
 
-# ASSERT the assembled command, don't infer it from variables. On the WSL side a summary that
-# read "AUTH=yes" once hid the fact that --api-key was never appended. Same trap here.
-if ($A -contains '--api-key') { Write-Host "internal error: -api-key must never be in argv" -ForegroundColor Red; exit 3 }
+# ASSERT the command that will ACTUALLY EXEC - $A plus the passthrough tail. Asserting on $A alone
+# left a hole: `serve.cmd --api-key <secret>` arrives through ValueFromRemainingArguments, lands in
+# argv, and every assertion still passes while the summary prints AUTH=yes.
+$Final = @($A) + @($ExtraArgs)
+$flat = $Final -join ' '
+foreach ($tok in $Final) {
+    if ($tok -eq '--api-key' -or $tok -like '--api-key=*') {
+        Write-Host 'refusing: the API key must not be in argv (any process that can enumerate' -ForegroundColor Red
+        Write-Host 'command lines here could read it). Set LLAMA_API_KEY instead - serve.ps1' -ForegroundColor Red
+        Write-Host 'resolves it from Process/User/Machine scope on its own.' -ForegroundColor Red
+        exit 2
+    }
+}
+# Auth must be active without the secret appearing in the assembled argv. On the WSL side a summary
+# that read "AUTH=yes" once hid the fact that --api-key was never appended. Same trap here.
+if ($Final -contains '--api-key') { Write-Host "internal error: -api-key must never be in argv" -ForegroundColor Red; exit 3 }
 if ($key -and $env:LLAMA_API_KEY -ne $key.Value) { Write-Host "internal error: key resolved but not exported" -ForegroundColor Red; exit 3 }
-if ($A -notcontains $Alias) { Write-Host "internal error: --alias value missing from argv" -ForegroundColor Red; exit 3 }
-$flat = $A -join ' '
+if ($Final -notcontains $Alias) { Write-Host "internal error: --alias value missing from argv" -ForegroundColor Red; exit 3 }
 $req = @('--tensor-split', '-ctk')
 if ($Spec -and $Spec -ne 'none') { $req = @("--spec-type $Spec") + $req }
 foreach ($r in $req) {
@@ -208,12 +235,13 @@ $summary = 'P={0} Tier={1} -> CTX={2} NPRED={3} SPLIT={4} NGL={5} KV={6} MM={7} 
 
 if ($DryRun) {
     Write-Host $summary
-    Write-Host (' ' + $script:MSExe + ' ' + $flat + $(if ($ExtraArgs) { ' ' + ($ExtraArgs -join ' ') } else { '' }))
+    Write-Host (' ' + $script:MSExe + ' ' + $flat)
     exit 0
 }
 
 Write-Host $summary
 Write-Host ("url: http://{0}:{1}/v1  (from WSL: same IP, and pi's baseUrl must use it)" -f $BindHost, $Port)
-# exec-equivalent: this script's exit code becomes llama-server's.
-& $script:MSExe @A @ExtraArgs
+# exec-equivalent: this script's exit code becomes llama-server's. $Final, so the asserted command
+# and the exec'd command are the same string and cannot disagree.
+& $script:MSExe @Final
 exit $LASTEXITCODE

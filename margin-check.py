@@ -54,7 +54,10 @@ def idle_free():
 
 
 def chat(content, max_tokens=400):
-    p = {"model": "qwen3.8-27b", "max_tokens": max_tokens, "temperature": 0,
+    # MODEL lets the caller exercise the alias it thinks is live. llama.cpp IGNORES the incoming
+    # model name, so this cannot fail on a wrong profile - which is exactly why the harness asserts
+    # identity from /v1/models instead of trusting it (wsl-harness.sh: assert_identity).
+    p = {"model": os.environ.get("MODEL", "qwen3.8-27b"), "max_tokens": max_tokens, "temperature": 0,
          "messages": [{"role": "user", "content": content}]}
     h = {"Content-Type": "application/json"}
     if KEY:
