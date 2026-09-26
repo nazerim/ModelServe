@@ -116,7 +116,10 @@ gpu_used() {
 prof_summary() {
   grep -aE '^P=.* -> CTX=[0-9]+' <<<"$1" | tail -1
 }
-prof_field() { prof_summary "$1" | sed -nE "s/.*[ =]$2=([A-Za-z0-9.,/-]+).*/\1/p" | head -1; }
+# `_` is in the class because KV/KVD values are q8_0 / q4_0: without it `KV=q8_0` parsed as "q8",
+# a plausible-looking truncation of a value that never booted - the exact failure mode this
+# function exists to prevent.
+prof_field() { prof_summary "$1" | sed -nE "s/.*[ =]$2=([A-Za-z0-9.,/_-]+).*/\1/p" | head -1; }
 
 # assert_identity <alias> <ctx> <log> — prove the answering server is the one just launched.
 # Nothing else in the pipeline can tell a fresh boot from a stale server that survived a failed

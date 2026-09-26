@@ -4,7 +4,7 @@ rem it). Prefer start.cmd for normal use; this is for watching the load trace li
 rem for why a .cmd wrapper is needed at all (LocalMachine = AllSigned).
 rem
 rem   C:\ModelServe\win\serve.cmd -DryRun                    print the resolved command, run nothing
-rem   C:\ModelServe\win\serve.cmd -P q3l -Bind loopback      Windows-only, no key needed
+rem   C:\ModelServe\win\serve.cmd -Bind loopback              Windows-only, no key needed
 rem   C:\ModelServe\win\serve.cmd -P q4s -Ctx 98304          (a Tier, or an explicit -Ctx)
 setlocal
 cd /d C:\

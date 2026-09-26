@@ -4,7 +4,9 @@
 #
 # Models live in ~/.models. Pick a quant with Q= and a size with TIER=:
 #
-#   Q=q3    Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  -> 208,896 ctx   (default)
+#   Q=q3    Qwen3.8-27B-UD-Q3_K_XL.gguf  12.24 GiB  -> 196,608 ctx   (default)
+#     (native Windows measures this same file at 229,376 on split 47,19 — see win/config.ps1.
+#      The ext4 CEIL below is NOT re-measured at that layout, so it stays at its own number.)
 #   Q=q4s   Qwen3.8-27B-UD-Q4_K_S.gguf   14.30 GiB  -> 155,648 ctx   (SPLIT 17,8: 705 MiB)
 #   Q=q4    Qwen3.8-27B-UD-Q4_K_XL.gguf  16.35 GiB  -> 122,880 ctx   (SPLIT 17,8: 1,045 MiB)
 #
@@ -51,9 +53,12 @@ TIER="${TIER:-max}"   # default = the quant's SAFE ceiling
 case "$Q" in
   # Ceilings = the largest context still leaving >=~400 MiB on the display GPU,
   # measured with BATCH=1024/UBATCH=256 and SPLIT=18,7 (see README "Models on hand").
-  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="17.4,7.7" ;;
+  q3)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q3_K_XL.gguf}"; CEIL="${CEIL:-196608}"; PROFILE_ID="qwen3.8-27b"; SPLIT_D="47,19" ;;
   # NOTE: the right split is PROFILE-specific, not global - q4xl at 18,7 left the
   # display GPU 81 MiB free, at 17,8 it had 1,045 MiB, and at 15,10 it failed to boot.
+  # NOTE 2026-09-26: native Windows certifies these two at 172,032/47,19 and 131,072/45,21 with the
+  # MTP pin + q8_0 draft KV (see HANDOFF-2026-09-26.md). The numbers below are the ext4 measurements
+  # and were NOT raised, because the split and the pin were re-derived on Windows VRAM only.
   q4s) MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_S.gguf}";   CEIL="${CEIL:-155648}"; PROFILE_ID="qwen3.8-27b-4s"; SPLIT_D="17,8" ;;
   q4)  MODEL="${MODEL:-$M/Qwen3.8-27B-UD-Q4_K_XL.gguf}";  CEIL="${CEIL:-122880}"; PROFILE_ID="qwen3.8-27b-4xl"; SPLIT_D="17,8" ;;
   *)   MODEL="${MODEL:-}"; CEIL="${CEIL:-999999}"; PROFILE_ID="qwen3.8-27b" ;;  # MODEL= given -> trust it
@@ -72,6 +77,12 @@ if [ "$CTX" -gt "$CEIL" ]; then
 fi
 
 # ---- everything else -------------------------------------------------------
+# SPLIT is a LAYER-COUNT fraction here, not GB: with -sm layer, llama.cpp assigns unit il to the
+# device whose normalised --tensor-split share first exceeds il/(n_layer+1). This model is 65 blocks
+# (0..64, the last one the in-file MTP head) so the denominator is 66 and "47,19" = exactly 47 units
+# on CUDA0. 47,19 replaced '17.4,7.7' on 2026-09-26: that decimal normalised to 0.6932 = 45.75/66,
+# so it had always been booting 46/20. Measured: 47,19 lifts the 3080 by 170 MiB (block 46, a Gated
+# DeltaNet layer - no KV travels with it) and costs the 5070 Ti only ~45 MiB.
 # Proportions in CUDA order: CUDA0=5070 Ti, CUDA1=3080. 18,7 was found by sweeping
 # at CTX=196608: 19,6 also fits but leaves the display GPU 98 MiB, while 18,7 keeps
 # 541 MiB (3080 441) and is slightly faster; 17,8/16,9 overflow the 3080 instead.

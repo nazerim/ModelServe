@@ -37,12 +37,35 @@ why both archives land in one folder instead of the three-folder split serve.sh 
 
 Four names, each a *measured* combination rather than a knob you have to pair correctly:
 
-| profile | gguf | CTX | batch | split | advertises as | free under load | state |
-|---|---|---|---|---|---|---|---|
-| **q3** | Q3_K_XL 12.24 GiB | 196,608 | 1024/256 | 17.4,7.7 | qwen3.8-27b | 637 MiB | 3/3 SAFE |
-| **q3l** | same file | **225,280** | **512/128** | 17.4,7.7 | qwen3.8-27b-l | 517 MiB | 3/3 SAFE |
-| **q4s** | Q4_K_S 14.30 GiB | 155,648 | 1024/256 | 17,8 | qwen3.8-27b-4s | 549 MiB | 3/3 SAFE |
-| **q4** | Q4_K_XL 16.35 GiB | 122,880 | 1024/256 | 17,8 | qwen3.8-27b-4xl | 603-685 MiB | 3/3 SAFE |
+| profile | gguf | CTX | batch | split | pin / draft-KV | advertises as | free under load | state |
+|---|---|---|---|---|---|---|---|---|
+| **q3** (default) | Q3_K_XL 12.24 GiB | **229,376** | 1024/**128** | 47,19 | blk.64→CUDA0 / q8_0 | qwen3.8-27b | **203 / 469 MiB** (3080 / 5070 Ti) | certified 2026-09-26: eight-size ladder 196,608→229,376 all booted, worst-case load sample at the top, pp 1,178.90 / decode 51.39 tok/s |
+| **q3l** (default) | same file | **229,376** | **512/128** | 47,19 | blk.64→CUDA0 / q8_0 | qwen3.8-27b-l | **203 / 476 MiB** (3080 / 5070 Ti) | re-measured 2026-09-26 at 47,19 + the raised ceiling. Was 463-481 MiB, 3/3 SAFE, on 2026-09-24 at 17.4,7.7 / 225,280 |
+| **q4s** | Q4_K_S 14.30 GiB | **180,224** | **1024/128** | **47,19** | blk.64→CUDA0 / q8_0 | qwen3.8-27b-4s | **421 MiB** | certified 2026-09-26 cold, from the profile as written. +24,576 tokens over the 09-19 row at 155,648/17,8/1024-256 (which measured 549 then, 33 today) — paid for by the pin + quantised draft KV (~846 MiB) and halving ubatch (~115 MiB) |
+| **q4** | Q4_K_XL 16.35 GiB | **135,168** | **1024/128** | **45,21** | blk.64→CUDA0 / q8_0 | qwen3.8-27b-4xl | **429 MiB** | certified 2026-09-26, decode ~44.9. 139,264 measures **345 MARGINAL** and is available as `-Ctx`, not as a ceiling. Note this row wants **45,21**, not 47,19 (47,19 leaves CUDA0 only ~266) |
+
+**q3l was retired 2026-09-26** and its 225,280 / 512-128 row is gone from config.ps1: at the same
+229,376 on the 47,19 split it left the same margin as q3 (worst 203 MiB on the 3080), so the smaller
+batch was not what bought the room — ubatch is (256→128 ≈ 130 MiB; b 1024→512 ≈ nothing). Same GGUF,
+so only an identity was lost. Its earlier certifications (463-481 MiB, 3/3 SAFE on 2026-09-24) stay
+in this file and in stability-win-q3l*.tsv as dated evidence.
+
+**The top two rows were re-measured on 2026-09-24 and the numbers above replace the 2026-09-19
+ones** (q3 637 MiB, q3l 517 MiB, both at 1024/256 and f16 draft KV respectively). The reason is not
+that the old measurements were wrong — they were correct for the machine as it then stood. Two
+things moved: the 3080 now carries a resident load it did not have then (Norton 360's
+`model_host.exe`, ~450 MiB, which is also why the same shipping configs measured **187-199 MiB
+(q3) and 67-85 MiB (q3l) = UNSAFE** when re-read on 2026-09-24), and the pin plus a quantised draft
+KV were found to buy back more than that. That pair is what makes 225,280-229,376 bootable at all —
+measured on the retired q3l row, same GGUF and same pin: pin alone left 251-321 MiB (MARGINAL) and
+q8_0 alone OOMed in `sched_reserve`, because the 3080 has to
+fit a ~1.14 GiB compute buffer at that size. q3's batch dropped to 128 because n_ubatch, not
+n_batch, is what costs VRAM and prefill here. Full record: `MTP-PIN-TEST.md`.
+
+Consequence of the batch change worth knowing before booting: the disk cache key includes the
+batch, so q3's identity moved from `q3-196608-1024x256-q80` to `q3-196608-1024x128-q80` and its
+~59 GiB of stored entries are now orphaned (they are never read, and they still hold their `meta`
+lock files). q3l's identity is unchanged. Delete the old directory when you are done comparing.
 
 These are **profiles, not tiers**, and the distinction turned out to matter: q3l is not "q3 with a
 bigger number" — it is only SAFE because halving the prompt buffer paid for the extra 28,672
@@ -93,9 +116,10 @@ AV before you look at anything else, because every GPU-side symptom is also an A
 **2. Device order matches WSL, so the splits mean the same thing.** `--list-devices` natively
 reports CUDA0 = 5070 Ti, CUDA1 = 3080 — the same inversion vs nvidia-smi that serve.sh
 documents. serve.ps1 asserts this before every launch (`MSCuda0MustContain` in config.ps1)
-rather than trusting it: if an update ever flips it, "17.4,7.7" would silently aim 17 GiB at
-the 10 GiB card. `nvidia-smi -L` on Windows lists the 3080 first; do not derive the split
-from that.
+rather than trusting it: if an update ever flips it, "47,19" would silently aim 47 of the 66 layer
+units — most of a 12 GiB model — at the 10 GiB card. `nvidia-smi -L` on Windows lists the 3080
+first; do not derive the split from that, and do not read --tensor-split as gigabytes: with
+-sm layer it is a layer-COUNT fraction over n_layer+1 (documented at the profiles in config.ps1).
 
 **3. No inbound firewall rule is needed for WSL.** check.ps1 used to warn that the unclassified
 (=> Public) vEthernet adapter would block inbound. Empirically it does not: WSL-origin traffic
@@ -103,6 +127,17 @@ on `vEthernet (WSL (Hyper-V firewall))` reaches the host's port with no rule at 
 rule is inventory, not a prerequisite — create it only if `probe-from-wsl.sh` reports TCP
 closed. `-Firewall` on the installer is therefore opt-in, and it scopes `RemoteAddress` to the
 WSL /20 so the LAN stays closed either way.
+
+**LAN access is opt-in, and it is three layers.** `-Bind lan` (the LAN adapter's IPv4) or
+`-Bind all` (0.0.0.0 — every interface) decides what the server LISTENS on; `LLAMA_API_KEY` is
+still required for any non-loopback bind (CORS is `*`, so the key is the only gate); and on top
+of both, Defender must allow TCP 8000 inbound from the LAN subnet — the WSL-scoped rule this
+installer can create does NOT cover it, and a lan/all boot prints the exact
+`New-NetFirewallRule` to run, elevated, once. `-Bind lan` refuses to boot rather than guess
+when more than one adapter carries a default route (the ExpressVPN TAP adapter does, on VPN
+days): set `$MSLanAdapterPin` in win\config.ps1 once (e.g. `'Ethernet'`), or pass a literal
+`-Bind <ip>`. IPv6 is deliberately out of scope: the resolver is IPv4-only and `all` is the
+v4 wildcard — revisit if the LAN ever stops offering v4.
 
 **4. The bind address is dynamic.** `-Bind wsl` (the default) resolves the adapter's IPv4 at
 launch — currently 172.25.240.1 — and passes a literal address to the child so the poller, the
@@ -151,6 +186,24 @@ reset for a frozen desktop.
 **9. Sleep.** The plan is Ultimate Performance and S3 is *supported* (not Modern Standby), so
 an unattended box can sleep mid-context and take both GPUs with it. Whatever keeps it awake for
 a 200K benchmark day needs to be a deliberate setting, not luck.
+
+**10. One layer can be pinned to a card; the "draft device" flag cannot do it.** `-ot` takes a
+*device* buffer type, not a dtype — this build's own list is `CPU`, `CUDA0`, `CUDA1` — so
+`-ot "blk.64.*=CUDA0"` moves exactly the MTP layer (verified byte-exact: 334.74 MiB, weights
+7497.10/4508.80 -> 7831.84/4174.06, everything else unchanged, reproduced 7/7 boots). What does
+**not** work is `--spec-draft-device` / `-devd`: it reaches argv, it is parsed (the server prints
+`devices=[CUDA0]`), and it is then ignored, because upstream applies the draft device list only
+inside `if (has_draft)` — the branch for a *separate* draft model file. An in-file MTP head is a
+second context over already-placed weights, so it has no device to choose. `-otd` cannot substitute
+either. This cost two wrong conclusions before it was caught; `MTP-PIN-TEST.md` has the sequence.
+
+**11. A pp number read with the disk cache on is not a measurement.** The profiles boot with
+`--cache-dir` and `-ctxcp 12`, so a repeated prompt is *loaded* rather than computed: replaying the
+same ~6K-token prompt on a second boot measured 6,921 tok/s against 1,127 cold, and margin-check's
+own second round reused the first round's prefix (10.6 s vs 34.5 s on an identical 31K prompt).
+Any `pp=?` in a stability row is a cache hit, not a missing measurement. `perf-test.py` now takes
+`SEED_OFF` (prefill text only — the decode prompt stays fixed so draft acceptance remains
+comparable) and the batch comparisons above were run with `-NoCacheDir` and one round per boot.
 
 ## Disk KV cache (patched build only)
 
@@ -301,9 +354,10 @@ itself.
 
 ## Pointing pi at it
 
-~/.pi/agent/models.json now carries **llama.win** after llama.local, with **four** entries —
-q3, **q3l (qwen3.8-27b-l, 225,280)**, q4s, q4 — so pi's list mirrors the four things the server
-can actually boot. llama.local keeps its three (q3l is native-only until measured on ext4).
+~/.pi/agent/models.json now carries **llama.win** after llama.local, with **three** entries —
+q3 (qwen3.8-27b, 229,376), q4s, q4 — so pi's list mirrors the three things the server can
+actually boot. llama.local keeps its own rows; the q3l entry was dropped here and on the local
+side when the profile was retired.
 Each declaration was checked against `serve.ps1 -DryRun` rather than against these notes: every
 entry's contextWindow equals the CTX its profile resolves to, so nothing over-declares.
 
@@ -312,8 +366,8 @@ entry's contextWindow equals the CTX its profile resolves to, so nothing over-de
 - api openai-completions, apiKey "$OMLX_API_KEY" (pi expands the env reference; the Windows
   User-scope LLAMA_API_KEY holds the same value), and the *same* compat block.
 - the same model ids as `llama.local` — they have to be, because the server advertises whatever
-  --alias it booted with — with display names suffixed [win], plus a fourth entry for **q3l**
-  (`qwen3.8-27b-l`, contextWindow 225,280). Each entry's contextWindow equals the CTX its profile
+  --alias it booted with — with display names suffixed [win]. q3's entry carries
+  `contextWindow 229,376`, matching the ceiling its profile resolves to. Each entry's contextWindow equals the CTX its profile
   resolves to, checked against `serve.ps1 -DryRun` rather than against these notes.
 
 Verified two ways: a structural diff shows the two providers identical apart from baseUrl and

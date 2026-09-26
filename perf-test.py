@@ -10,13 +10,18 @@ Env: PORT, ROUNDS_PP, ROUNDS_TG, PP_TOKENS (approx words), GEN_TOKENS
 import json, os, random, statistics, subprocess, threading, time, urllib.request
 
 PORT = os.environ.get("PORT", "8000")
-B = f"http://127.0.0.1:{PORT}/v1/chat/completions"
+# BASE=... to test a server on another OS (the native-Windows one), same convention as test.sh.
+B = os.environ.get("BASE", f"http://127.0.0.1:{PORT}").rstrip("/") + "/v1/chat/completions"
 KEY = os.environ.get("OMLX_API_KEY", "")
 MODEL = os.environ.get("MODEL", "qwen3.8-27b")
 R_PP = int(os.environ.get("ROUNDS_PP", "3"))
 R_TG = int(os.environ.get("ROUNDS_TG", "6"))
 WORDS = int(os.environ.get("PP_TOKENS", "20000"))
 GTOK = int(os.environ.get("GEN_TOKENS", "300"))
+# Distinct prompts are NOT enough once a persistent disk prompt cache is on: the same seeds
+# replay the same text on the next boot and pp comes back ~6x faster from cache (measured:
+# 1127 -> 6921 tok/s). Bump SEED_OFF once per boot/rung so every run sees unseen text.
+SEED_OFF = int(os.environ.get("SEED_OFF", "0"))
 
 VOCAB = ("context memory bandwidth attention cache quant layer token gpu tensor stream kernel "
          "weight gradient batch inference latency transformer head router shard decode prefetch "
@@ -66,7 +71,7 @@ th.start()
 try:
     pp = []
     for i in range(R_PP):
-        d, dt = post([{"role": "user", "content": filler(100 + i) + "\n\nAnswer with exactly: ok"}], 8)
+        d, dt = post([{"role": "user", "content": filler(100 + SEED_OFF + i) + "\n\nAnswer with exactly: ok"}], 8)
         n = d["usage"]["prompt_tokens"]
         rate = n / max(dt - 0.4, 0.1)          # subtract the ~0.4s of generating 8 tokens
         pp.append(rate)
@@ -74,7 +79,11 @@ try:
 
     tg = []
     for i in range(R_TG):
-        q = ("Explain in detail how paged KV caches work, point " + str(i) + ", at least 200 words.")
+        # TG_PROMPT picks the workload SHAPE. Draft acceptance is set by how predictable the
+        # content is, not by the model alone — greedy structured output accepts far more draft
+        # tokens than prose — so speculative depth has to be tuned per content type, and a
+        # prose-only number will understate high k. Default keeps the historical prompt verbatim.
+        q = os.environ.get("TG_PROMPT", "Explain in detail how paged KV caches work, point ") + str(i)
         d, dt = post([{"role": "user", "content": q}], GTOK)
         n = d["usage"]["completion_tokens"]
         rate = n / dt

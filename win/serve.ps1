@@ -5,9 +5,9 @@
   ".\serve.ps1" is refused with "is not digitally signed"; cmd.exe is not subject to
   ExecutionPolicy and -ExecutionPolicy Bypass sets Process scope, which outranks LocalMachine):
 
-      serve.cmd                                   # q3, WSL-safe ceiling, bound for WSL clients
-      serve.cmd -P q3l                            # 225,280 ctx + 512/128 batch
+      serve.cmd                                   # q3 (default), WSL-safe ceiling, bound for WSL clients
       serve.cmd -P q4 -Tier medium
+      serve.cmd -Tier large                       # 163,840 ctx: most VRAM headroom
       serve.cmd -DryRun                           # print the resolved command, launch nothing
       serve.cmd -Bind loopback                    # Windows-local only, no key required
 
@@ -16,7 +16,10 @@
   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ModelServe\win\...)
 
   -Bind defaults to 'wsl': the vEthernet (WSL) adapter address, so a client inside WSL can
-  reach it while the LAN cannot (0.0.0.0 is refused without a key, same policy as serve.sh).
+  reach it while the LAN cannot. 'lan' = the LAN adapter's single IPv4 (refusing to guess when
+  more than one adapter carries a default route); 'all' = 0.0.0.0, every face at once, so LAN
+  and WSL clients both work. Every non-loopback bind REQUIRES LLAMA_API_KEY (same policy as
+  serve.sh - llama-server's CORS is '*' by default).
   Everything is env-overridable too, so start.ps1 and a Task Scheduler entry can pass knobs
   without editing this file:  $env:Q / $env:CTX / $env:SPLIT / ...
 
@@ -24,6 +27,9 @@
 #>
 [CmdletBinding()]
 param(
+    # Default profile since 2026-09-26: q3 (Q3_K_XL at 229,376 with 1024/128). q3l was retired the
+    # same day - it measured the SAME margin as q3 at 229,376, so its smaller batch was not the
+    # thing buying the room. Use -Tier / -Ctx for a smaller window, -P q4s|q4 for the other quants.
     [string]$Q      = $(if ($env:Q)      { $env:Q }      else { 'q3' }),
     # -P is the real name for what is being selected: a PROFILE (gguf + context + batch + ceiling
     # + alias). -Q stays a synonym so "Q=q4s" keeps working from both sides of the bridge.
@@ -36,6 +42,14 @@ param(
     [string]$Split  = $(if ($env:SPLIT)  { $env:SPLIT }   else { '' }),       # '' = the profile default
     [string]$Ngl    = $(if ($env:NGL -or $env:NGL -eq '0') { $env:NGL } else { '99' }),
     [string]$Kv     = $(if ($env:KV)     { $env:KV }      else { 'q8_0' }),
+    # Draft-context KV type (-ctkd/-ctvd). Empty = llama.cpp's own default, which is f16 EVEN WHEN
+    # the target is q8_0 - so the MTP head's KV quietly costs ~4 KiB/token on the 3080. Baked into
+    # the q3 profile because 229,376 does not fit without it (see config.ps1).
+    [string]$KvDraft  = $(if ($env:KVDRAFT) { $env:KVDRAFT } else { '' }),
+    # Per-tensor device pin (-ot). The right-hand side is a DEVICE buffer type on this build
+    # (CPU / CUDA0 / CUDA1), which is what makes pinning one layer possible at all -
+    # --spec-draft-device does nothing for an in-file MTP head.
+    [string]$OvTensor = $(if ($env:OVTENSOR) { $env:OVTENSOR } else { '' }),
     [string]$Mm     = $(if ($env:MM)     { $env:MM }      else { 'cpu' }),
     [int]$Batch   = $(if ($env:BATCH)  { [int]$env:BATCH }  else { 1024 }),
     [int]$Ubatch  = $(if ($env:UBATCH) { [int]$env:UBATCH } else { 256 }),
@@ -108,7 +122,7 @@ $CacheAsked = [bool]($PSBoundParameters.ContainsKey('CacheDir') -or $PSBoundPara
 $CeilReq = $Ceil
 
 # ---- resolve profile + tier ---------------------------------------------
-# -P names a profile (q3|q3l|q4s|q4). -Q is a synonym, so the WSL habit of "Q=q4s TIER=medium"
+# -P names a profile (q3|q4s|q4). -Q is a synonym, so the WSL habit of "Q=q4s TIER=medium"
 # keeps working on both sides; when both are given, -P wins.
 if ($P) { $Q = $P }
 if (-not $script:MSProfiles.Contains($Q) -and -not $Model) {
@@ -123,7 +137,7 @@ if ($Model) {
     $Ceil = $CeilReq; $prof = $null
     $ModelPath = $Model
     if (-not $Alias) { $Alias = 'qwen3.8-27b' }
-    if (-not $Split) { $Split = '17.4,7.7' }
+    if (-not $Split) { $Split = '47,19' }   # same count form the q3 profile now uses
 } else {
     $prof  = $script:MSProfiles[$Q]
     $ModelPath = Join-Path $ModelDir $prof.File
@@ -131,20 +145,30 @@ if ($Model) {
     if ($CeilReq) { $Ceil = $CeilReq }                  # unless the caller was explicit
     if (-not $Alias) { $Alias = $prof.Alias }
     if (-not $Split) { $Split = $prof.Split }
-    # The profile's batch applies only when nobody asked otherwise. q3l's 225,280 was measured
-    # WITH 512/128; the same context at the default batch measured 275 MiB at 212,992, so letting
-    # the batch silently fall back would turn a SAFE profile into a borderline one.
+    # The profile's batch applies only when nobody asked otherwise. q3's 229,376 was measured WITH
+    # 1024/128; the same context at ubatch 256 costs ~130 MiB, and the 196,608 row measured 275 MiB
+    # at 212,992/1024/256, so letting the batch silently fall back would turn a SAFE profile into a
+    # borderline one.
     if ($prof.Batch -and -not $PSBoundParameters.ContainsKey('Batch') -and -not $env:BATCH) {
         $Batch = [int]$prof.Batch
         # -Ubatch is honoured independently of -Batch: a caller asking only for a smaller ubatch
         # must not have it silently rewritten to the profile's value.
         if (-not $PSBoundParameters.ContainsKey('Ubatch') -and -not $env:UBATCH) { $Ubatch = [int]$prof.Ubatch }
     }
+    # Same rule as the batch: the profile's pin and draft-KV apply unless the caller asked for
+    # something else, so an A/B can override either one without editing config.ps1.
+    if ($prof.OvTensor -and -not $PSBoundParameters.ContainsKey('OvTensor') -and -not $env:OVTENSOR) { $OvTensor = $prof.OvTensor }
+    if ($prof.KvDraft  -and -not $PSBoundParameters.ContainsKey('KvDraft')  -and -not $env:KVDRAFT)  { $KvDraft  = $prof.KvDraft }
 }
+# `none` is the documented way to ask for NO pin / NO draft-KV override on a profile that ships
+# with them. An empty string would be the obvious spelling but it does not survive
+# `powershell -File` from WSL (the argument can vanish entirely, silently reverting to the
+# profile), and "the flag I tested with is not the flag I documented" is the bug class here.
+if ($OvTensor -eq 'none') { $OvTensor = '' }
+if ($KvDraft  -eq 'none') { $KvDraft  = '' }
 
-# Tier picks a size WITHIN a profile; max = that profile's measured ceiling. A smaller tier on
-# q3l still uses 512/128 - harmless, marginally slower pp - rather than carrying a second set of
-# numbers nobody has measured.
+# Tier picks a size WITHIN a profile; max = that profile's measured ceiling. A smaller tier on q3
+# still uses 1024/128 rather than carrying a second set of numbers nobody has measured.
 $CtxWant = $Ctx
 if (-not $CtxWant) {
     $tierCtx = [int]$script:MSTiers[$Tier]
@@ -175,19 +199,13 @@ if (-not (Test-Path $ModelPath)) {
 $Mmproj = Join-Path $ModelDir 'mmproj-F16.gguf'
 if (-not (Test-Path $Mmproj)) { Write-Host "no such mmproj: $Mmproj" -ForegroundColor Red; exit 1 }
 
-# Bind resolution. 'wsl' is the point of this whole track: Windows serves, WSL connects.
-switch -Regex ($Bind) {
-    '^wsl$' {
-        $addr = Get-MSWslAddress
-        if (-not $addr) {
-            Write-Host "no vEthernet (WSL) adapter found - is WSL installed and running?" -ForegroundColor Red; exit 1
-        }
-        $BindHost = $addr.IP
-        [Console]::Error.WriteLine(("bind = {0}  ({1}, subnet {2})" -f $BindHost, $addr.Alias, $addr.Subnet))
-    }
-    '^loopback$|^127' { $BindHost = '127.0.0.1' }
-    default           { $BindHost = $Bind }
-}
+# Bind resolution: the ONE shared resolver in config.ps1 (wsl / lan / all / loopback / literal),
+# so the key gate below, start.ps1's poll, the advertised faces and the firewall hint cannot
+# drift apart. start.ps1 normally hands us the RESOLVED literal already, but a direct
+# `serve.cmd -Bind lan` must resolve identically - which is why this lives in config.ps1.
+$bindRes = Resolve-MSBind -Bind $Bind -Port $Port
+if (-not $bindRes) { exit 1 }
+$BindHost = $bindRes.BindHost
 
 # API key: from the environment only, never argv. Any non-loopback bind REQUIRES it -
 # llama-server also defaults CORS to '*', so an open unauthenticated endpoint is exactly
@@ -266,6 +284,14 @@ if (-not $NoCacheDir -and $CacheDir) {
     }
 }
 
+# llama.cpp requires n_ubatch <= n_batch and n_batch a multiple of n_ubatch, and it aborts partway
+# through loading when they disagree. Refuse up front instead: a boot that dies after 12 GiB of
+# weight upload looks like a memory problem, and the whole point here is not to misread those.
+if (([int]$Ubatch -lt 1) -or ([int]$Ubatch -gt [int]$Batch) -or (([int]$Batch % [int]$Ubatch) -ne 0)) {
+    Write-Host ("-Batch/-Ubatch invalid: {0}/{1} - llama.cpp requires ubatch <= batch and batch % ubatch == 0" -f $Batch, $Ubatch) -ForegroundColor Red
+    exit 2
+}
+
 # ---- assemble args --------------------------------------------------------
 $A = @(
     '-m', $ModelPath
@@ -285,6 +311,8 @@ if ($Split) { $A += @('--tensor-split', $Split) }
 if ($Spec -and $Spec -ne 'none') { $A += @('--spec-type', $Spec, '--spec-draft-n-max', "$SpecMax") }
 if ($Ngl)   { $A += @('-ngl', $Ngl) }
 if ($Kv)    { $A += @('-ctk', $Kv, '-ctv', $Kv) }
+if ($KvDraft)  { $A += @('-ctkd', $KvDraft, '-ctvd', $KvDraft) }
+if ($OvTensor) { $A += @('-ot', $OvTensor) }
 $A += @('--min-p', $MinP)
 # Only when the disk tier is actually on. b11034 accepts -ctxcp/-cms happily, so sending them on a
 # prebuilt boot would silently change its RAM-cache behaviour away from the numbers recorded for it
@@ -320,6 +348,10 @@ foreach ($tok in $Final) {
 if ($Final -contains '--api-key') { Write-Host "internal error: -api-key must never be in argv" -ForegroundColor Red; exit 3 }
 if ($key -and $env:LLAMA_API_KEY -ne $key.Value) { Write-Host "internal error: key resolved but not exported" -ForegroundColor Red; exit 3 }
 if ($Final -notcontains $Alias) { Write-Host "internal error: --alias value missing from argv" -ForegroundColor Red; exit 3 }
+# Requested != delivered. Tonight's lesson: -devd reached argv, was parsed, was printed back, and
+# still did nothing - so assert what we can see, and let the log confirm what it actually did.
+if ($OvTensor -and ($Final -notcontains '-ot'))   { Write-Host 'internal error: pin requested but -ot absent from argv' -ForegroundColor Red; exit 3 }
+if ($KvDraft  -and ($Final -notcontains '-ctkd')) { Write-Host 'internal error: draft KV type requested but -ctkd absent from argv' -ForegroundColor Red; exit 3 }
 $req = @('--tensor-split', '-ctk')
 if ($Spec -and $Spec -ne 'none') { $req = @("--spec-type $Spec") + $req }
 if ($CacheDir) { $req += @('--cache-dir', '--cache-dir-max') }
@@ -344,8 +376,8 @@ if (-not $NoVerify -and -not $DryRun) {
 }
 
 # Profile first, since that is the noun now (Tier is only the size knob within it).
-$summary = 'P={0} Tier={1} -> CTX={2} NPRED={3} SPLIT={4} NGL={5} KV={6} MM={7} BATCH={8}/{9} MINP={10} SPEC={13} ALIAS={11} BIND={12} AUTH={14} CKPT={15} CACHE={16} BIN={17}' -f `
-    $Q, $Tier, $CtxWant, $Npred, $Split, $Ngl, $Kv, $Mm, $Batch, $Ubatch, $MinP, $Alias, $BindHost, $Spec, $(if ($key) { 'yes' } else { 'no' }), ('{0}/{1}' -f $Ctxcp, $Cms), $CacheTag, $ExeTag
+$summary = 'P={0} Tier={1} -> CTX={2} NPRED={3} SPLIT={4} NGL={5} KV={6} MM={7} BATCH={8}/{9} MINP={10} SPEC={13} ALIAS={11} BIND={12} AUTH={14} CKPT={15} CACHE={16} BIN={17} PIN={18} KVD={19}' -f `
+    $Q, $Tier, $CtxWant, $Npred, $Split, $Ngl, $Kv, $Mm, $Batch, $Ubatch, $MinP, $Alias, $BindHost, $Spec, $(if ($key) { 'yes' } else { 'no' }), ('{0}/{1}' -f $Ctxcp, $Cms), $CacheTag, $ExeTag, $(if ($OvTensor) { $OvTensor -replace '[^A-Za-z0-9.,/-]','' } else { 'none' }), $(if ($KvDraft) { $KvDraft } else { 'f16' })
 
 if ($DryRun) {
     Write-Host $summary
@@ -354,7 +386,11 @@ if ($DryRun) {
 }
 
 Write-Host $summary
-Write-Host ("url: http://{0}:{1}/v1  (from WSL: same IP, and pi's baseUrl must use it)" -f $BindHost, $Port)
+foreach ($f in $bindRes.Faces) { Write-Host ("url: {0}" -f $f) }
+if ($bindRes.Hint) {
+    Write-Host 'firewall: LAN clients still need the inbound rule (elevated, once):' -ForegroundColor DarkGray
+    Write-Host ("  " + $bindRes.Hint) -ForegroundColor DarkGray
+}
 # exec-equivalent: this script's exit code becomes llama-server's. $Final, so the asserted command
 # and the exec'd command are the same string and cannot disagree.
 & $Exe @Final

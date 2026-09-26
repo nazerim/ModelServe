@@ -48,9 +48,11 @@ Previews that launch nothing:
 
 Examples:
 
-    start.cmd -P q3l                            deep context; brings its own prompt batch
+    start.cmd -Tier large                       163,840 ctx: most VRAM headroom
     start.cmd -P q4 -Tier medium                that quant at 98,304
-    start.cmd -Bind loopback                    Windows-only; no API key required
+    start.cmd -Bind loopback                    local Windows only; no API key required
+    start.cmd -Bind lan                         the LAN adapter's IPv4; key + firewall rule
+    start.cmd -Bind all                         every face (LAN + WSL + local); key + rule
     start.cmd -TimeoutSec 600                   first boot from a cold file cache
     stop.cmd -VerifyOnly                        report what holds GPU memory, change nothing
     check.cmd -Port 9000
@@ -64,14 +66,15 @@ ceiling and advertised alias that were measured together. `-Tier` picks a size *
 
 | `-P` | GGUF | CTX at Tier=max | prompt batch | advertises as | pick it when |
 |---|---|---|---|---|---|
-| `q3` | Q3_K_XL | 196,608 | 1024/256 | `qwen3.8-27b` | default: fastest prompt processing |
-| `q3l` | Q3_K_XL | 225,280 | **512/128** | `qwen3.8-27b-l` | you need the longest window and can pay ~20% pp |
-| `q4s` | Q4_K_S | 155,648 | 1024/256 | `qwen3.8-27b-4s` | better quality than q3, window still useful |
-| `q4` | Q4_K_XL | 122,880 | 1024/256 | `qwen3.8-27b-4xl` | highest quality on hand |
+| `q3` | Q3_K_XL | **229,376** | 1024/**128** | `qwen3.8-27b` | default: the biggest window AND the fastest prompt processing |
+| `q4s` | Q4_K_S | **180,224** | 1024/128 | `qwen3.8-27b-4s` | better quality than q3, window still useful |
+| `q4` | Q4_K_XL | **135,168** | 1024/128 | `qwen3.8-27b-4xl` | highest quality on hand (45,21, not 47,19 — see README) |
 
-q3l is not "q3 with a bigger number": the extra room is paid for out of the prompt compute
-buffer, so the context and the batch move as one unit. Same GGUF as q3, so no extra disk. q3l is
-native-Windows only — it has not been re-measured on ext4, so `llama.local` does not advertise it.
+q3l was retired on 2026-09-26. It existed because 225,280 was believed to require a smaller prompt
+batch, but at the same 229,376 on the 47,19 split q3 at 1024/128 and q3l at 512/128 leave the same
+margin (worst-case 203 MiB on the 3080), so the batch was not buying the room - ubatch was: 256 ->
+128 is worth ~130 MiB, 1024 -> 512 b is worth about nothing. Same GGUF either way, so nothing was
+lost but an identity. `start.cmd -P q3l` now refuses with the valid profile list.
 
 Tiers: `small` 32,768 · `medium` 98,304 · `large` 163,840 · `max` = the profile's ceiling (default).
 
@@ -88,8 +91,24 @@ Placement
 : `-Kv` `f16|q8_0|q4_0` · `-Mm` `cpu|3080|cuda0` where the vision projector goes
 
 Runtime
-: `-Port` · `-Bind` `wsl` (default) `loopback` `127.0.0.1` or a literal address · `-Alias`
+: `-Port` · `-Bind` `wsl` (default) `loopback` `127.0.0.1` `lan` `all` or a literal address
+:   — `lan` = the LAN adapter's IPv4, refusing when >1 adapter carries a default route (set
+:   `$MSLanAdapterPin` in win\config.ps1 once, e.g. `'Ethernet'`); `all` = 0.0.0.0 so LAN and
+:   WSL clients both work. Both need LLAMA_API_KEY plus a LAN-scoped inbound rule (printed).
+:   IPv6 is out of scope: the resolver is IPv4-only and `all` is the v4 wildcard. · `-Alias`
 : `-Batch`/`-Ubatch` prompt buffer · `-MinP` · `-Spec` `draft-mtp|none` + `-SpecMax`
+: `-OvTensor` per-tensor device pin (`-ot`), e.g. `blk.64.*=CUDA0` · `-KvDraft` draft-context KV type
+:   (`-ctkd`/`-ctvd`), e.g. `q8_0`. Both are **set by the profile** now (q3) — see README's
+:   profiles table for the measurement behind each row. Env: `OVTENSOR`, `KVDRAFT`.
+:   To A/B against the profile, pass the sentinel: `start.cmd -P q3 -OvTensor none -KvDraft none`
+:   reboots that profile unpinned with an f16 draft cache (verified: record line reads
+:   `PIN=none KVD=f16` and neither flag appears in argv). `none` rather than an empty string
+:   because an empty argument can vanish through `powershell -File` and silently revert to the
+:   profile. Do not conclude the flags are inert from a run that still shows `PIN=blk.64.CUDA0` in
+:   the record line — read the line.
+: What none of these can do is move the draft by device: `--spec-draft-device`/`-devd` is accepted
+: and ignored for an in-file MTP head (README item 10), and `-lv 4` is required to see the
+: per-device allocation lines that prove where anything landed — verbosity 3 omits them entirely.
 : `-NoVerify` skip the device-order check · `-TimeoutSec` (start)
 
 Prompt cache (patched build only — see README, "Disk KV cache")

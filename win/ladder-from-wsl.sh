@@ -40,18 +40,19 @@ if [ -z "$CTX_MAX_KNOWN" ]; then
   CTX_MAX_KNOWN=$(prof_field "$dry" CTX)
   LADDER_ALIAS=$(prof_field "$dry" ALIAS); LADDER_BATCH=$(prof_field "$dry" BATCH); LADDER_SPLIT=$(prof_field "$dry" SPLIT)
   LADDER_BIN=$(prof_field "$dry" BIN); LADDER_CACHE=$(prof_field "$dry" CACHE)
+  LADDER_PIN=$(prof_field "$dry" PIN); LADDER_KVD=$(prof_field "$dry" KVD)
   if [ -z "$CTX_MAX_KNOWN" ]; then
     echo "  guard could not be read from serve.ps1 -DryRun; falling back to 196608" >&2
-    CTX_MAX_KNOWN=196608; LADDER_ALIAS=qwen3.8-27b; LADDER_BATCH=1024/256; LADDER_SPLIT=17.4,7.7
-    LADDER_BIN=unknown; LADDER_CACHE=unknown
+    CTX_MAX_KNOWN=196608; LADDER_ALIAS=qwen3.8-27b; LADDER_BATCH=1024/128; LADDER_SPLIT=17.4,7.7
+    LADDER_BIN=unknown; LADDER_CACHE=unknown; LADDER_PIN=unknown; LADDER_KVD=unknown
     echo "ceiling guard: $CTX_MAX_KNOWN (FALLBACK, not from the profile)" >&2
   else
     echo "ceiling guard: $CTX_MAX_KNOWN (from profile $Q; raise with CTX_MAX_KNOWN=... only when measured)"
   fi
 fi
-[ -n "${LADDER_ALIAS:-}" ] || { dry=$(win_run "$WINSCRIPTS\\serve.ps1" 120 -P "$Q" -Tier max ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} -DryRun 2>/dev/null); LADDER_ALIAS=$(prof_field "$dry" ALIAS); LADDER_BATCH=$(prof_field "$dry" BATCH); LADDER_SPLIT=$(prof_field "$dry" SPLIT); LADDER_BIN=$(prof_field "$dry" BIN); LADDER_CACHE=$(prof_field "$dry" CACHE); }
+[ -n "${LADDER_ALIAS:-}" ] || { dry=$(win_run "$WINSCRIPTS\\serve.ps1" 120 -P "$Q" -Tier max ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} -DryRun 2>/dev/null); LADDER_ALIAS=$(prof_field "$dry" ALIAS); LADDER_BATCH=$(prof_field "$dry" BATCH); LADDER_SPLIT=$(prof_field "$dry" SPLIT); LADDER_BIN=$(prof_field "$dry" BIN); LADDER_CACHE=$(prof_field "$dry" CACHE); LADDER_PIN=$(prof_field "$dry" PIN); LADDER_KVD=$(prof_field "$dry" KVD); }
 echo "target: $BASE  profile=$Q split=${SPLIT:-${LADDER_SPLIT:-profile default}} alias=${LADDER_ALIAS:-?} batch=${LADDER_BATCH:-?}"
-printf 'profile\tctx\tsplit\tbatch\tstatus\tvram_5070Ti\tvram_3080\tfree_5070Ti\tfree_3080\tboot_s\ttok_s\tbin\tcache\n' > "$OUT"
+printf 'profile\tctx\tsplit\tbatch\tstatus\tvram_5070Ti\tvram_3080\tfree_5070Ti\tfree_3080\tboot_s\ttok_s\tbin\tcache\tpin\tkvd\n' > "$OUT"
 
 for c in $SIZES; do
   if [ "$c" -gt "$CTX_MAX_KNOWN" ] && [ -z "${FORCE:-}" ]; then
@@ -94,13 +95,13 @@ print(f"{d['usage']['completion_tokens']/(time.time()-t):.1f}")
 PY
 )
     echo "  OK   5070Ti used=$u5070 free=$f5070 | 3080 used=$u3080 free=$f3080 | ${sp} tok/s"
-    printf '%s\t%s\t%s\t%s\tOK\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$Q" "$c" "${LADDER_SPLIT:-?}" "${LADDER_BATCH:-?}" "$u5070" "$u3080" "$f5070" "$f3080" "$boot" "$sp" "${LADDER_BIN:-?}" "${LADDER_CACHE:-?}" >> "$OUT"
+    printf '%s\t%s\t%s\t%s\tOK\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$Q" "$c" "${LADDER_SPLIT:-?}" "${LADDER_BATCH:-?}" "$u5070" "$u3080" "$f5070" "$f3080" "$boot" "$sp" "${LADDER_BIN:-?}" "${LADDER_CACHE:-?}" "${LADDER_PIN:-?}" "${LADDER_KVD:-?}" >> "$OUT"
   else
     echo " FAIL after ${boot}s"
     read -r f3080 f5070 <<<"$(gpu_free)"; read -r u3080 u5070 <<<"$(gpu_used)"
     echo "       5070Ti used=$u5070 free=$f5070 | 3080 used=$u3080 free=$f3080"
     tail -4 "$log" | tr -d '\0\r' | grep -iE 'out of memory|failed to allocate|device not ready|SIGABRT|NOT READY|no-answer' | head -2 | cut -c1-140 | sed 's/^/       /'
-    printf '%s\t%s\t%s\t%s\tFAIL\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\n' "$Q" "$c" "${LADDER_SPLIT:-?}" "${LADDER_BATCH:-?}" "$u5070" "$u3080" "$f5070" "$f3080" "${boot}" "${LADDER_BIN:-?}" "${LADDER_CACHE:-?}" >> "$OUT"
+    printf '%s\t%s\t%s\t%s\tFAIL\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\n' "$Q" "$c" "${LADDER_SPLIT:-?}" "${LADDER_BATCH:-?}" "$u5070" "$u3080" "$f5070" "$f3080" "${boot}" "${LADDER_BIN:-?}" "${LADDER_CACHE:-?}" "${LADDER_PIN:-?}" "${LADDER_KVD:-?}" >> "$OUT"
     break
   fi
 done

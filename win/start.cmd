@@ -8,8 +8,10 @@ rem MachinePolicy > UserPolicy > Process > CurrentUser > LocalMachine). No polic
 rem nothing is loosened beyond this one process. Full reasoning: install-windows.cmd.
 rem
 rem   C:\ModelServe\win\start.cmd                        (q3, the default profile)
-rem   C:\ModelServe\win\start.cmd -P q3l                 (225,280 ctx + 512/128 batch)
+rem   C:\ModelServe\win\start.cmd -Tier large          (163,840 ctx, most headroom)
 rem   C:\ModelServe\win\start.cmd -P q4 -Tier medium
+rem   C:\ModelServe\win\start.cmd -Bind lan              (LAN adapter's IPv4; key + firewall rule)
+rem   C:\ModelServe\win\start.cmd -Bind all              (0.0.0.0: LAN + WSL + local; key + rule)
 rem   C:\ModelServe\win\start.cmd -WhatIf                (print the resolved command, launch nothing)
 setlocal
 cd /d C:\

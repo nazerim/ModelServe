@@ -9,9 +9,11 @@
   Usage (start.cmd is the policy-proof wrapper - this box is AllSigned at LocalMachine scope, so
   a bare ".\start.ps1" is refused; see start.cmd for the reasoning):
       .\..\start.cmd                                  # q3, ceiling ctx, bound to the WSL adapter IP
-      start.cmd -P q3l                                # 225,280 ctx + 512/128 prompt batch
+      start.cmd -Tier large                           # 163,840 ctx: most VRAM headroom
       start.cmd -P q4 -Tier medium
-      start.cmd -Bind loopback                        # Windows-only
+      start.cmd -Bind loopback                        # Windows-local only; no API key required
+      start.cmd -Bind lan                             # the LAN adapter's IPv4; key + firewall rule
+      start.cmd -Bind all                             # 0.0.0.0: LAN + WSL + local; key + rule
       start.cmd -WhatIf                               # show the resolved command, launch nothing
       start.cmd -TimeoutSec 600                       # first boot from a cold file cache
 
@@ -22,6 +24,7 @@
 param(
     [string]$Q, [string]$P, [string]$Tier, [string]$Model, [string]$ModelDir,
     [int]$Ctx, [int]$Npred, [string]$Split, [string]$Ngl, [string]$Kv, [string]$Mm,
+    [string]$KvDraft, [string]$OvTensor,
     [int]$Batch, [int]$Ubatch, [string]$MinP, [int]$Port, [string]$Bind, [string]$Alias,
     [string]$Spec, [int]$SpecMax, [int]$Ceil,
     [string]$Bin, [string]$CacheDir, [int]$CacheMax, [int]$Ctxcp, [int]$Cms,
@@ -70,11 +73,21 @@ if (-not $WhatIf) {
     }
 }
 
+# One fresh pair of logs per boot, previous boots kept (max 10, MS_LOG_KEEP to change).
+# After the "refuse to stack" gate, so a rejected boot never archives the logs of the server that
+# is still running. Failure to rename is a warning, never a reason to skip the launch.
+foreach ($lg in @($outLog, $errLog)) {
+    $rot = Invoke-MSLogRotate -Path $lg
+    if ($rot -like 'FAILED*') {
+        Write-Host ("  log rotate {0} (previous instance still holds it) - this boot overwrites {1}" -f $rot, $lg) -ForegroundColor Yellow
+    }
+}
+
 # Forward ONLY what the caller actually set. Re-defaulting here would silently override
 # serve.ps1's own defaults and the two files would drift apart.
 $forward = @()
 foreach ($name in @('Q','P','Tier','Model','ModelDir','Ctx','Npred','Split','Ngl','Kv','Mm',
-                    'Batch','Ubatch','MinP','Port','Bind','Alias','Spec','SpecMax','Ceil',
+                    'KvDraft','OvTensor','Batch','Ubatch','MinP','Port','Alias','Spec','SpecMax','Ceil',
                     'Bin','CacheDir','CacheMax','Ctxcp','Cms')) {
     if ($PSBoundParameters.ContainsKey($name)) { $forward += ('-{0}' -f $name); $forward += ("" + $PSBoundParameters[$name]) }
 }
@@ -84,26 +97,27 @@ if ($NoCacheDir) { $forward += '-NoCacheDir' }
 if ($ExtraArgs)  { $forward += $ExtraArgs }
 
 $Port    = if ($Port) { $Port } else { 8000 }
-# Resolve 'wsl' once, here, and hand serve.ps1 a literal address. Otherwise the child could
-# pick a different adapter (a VPN adds one) than the IP we then poll and advertise.
+# Resolve the bind keyword ONCE, here, through the shared resolver (config.ps1) and hand
+# serve.ps1 a LITERAL address. Otherwise the child could pick a different adapter (a VPN
+# adds one) than the IP we then poll and advertise. Note 'Bind' is deliberately absent from
+# the forward loop above: the keyword never reaches the child, only its resolution does.
 $bindIn  = if ($Bind) { $Bind } elseif ($env:BIND) { $env:BIND } else { 'wsl' }
-if ($bindIn -eq 'wsl') {
-    $addr = Get-MSWslAddress
-    if (-not $addr) { Write-Host "no vEthernet (WSL) adapter found - is WSL running?" -ForegroundColor Red; exit 1 }
-    $BindHost = $addr.IP
-    if ($forward -contains '-Bind') { } else { $forward += '-Bind'; $forward += $BindHost }
-} elseif ($bindIn -match '^loopback|^127') {
-    $BindHost = '127.0.0.1'
-} else {
-    $BindHost = $bindIn
-}
+# The name MUST NOT case-collide with the [string]$Bind parameter: PowerShell variables are
+# case-insensitive AND carry the param's type constraint, so `$bind = <object>` coerced the
+# resolver's result to its ToString — truthy, so the null check passed, but .BindHost came back
+# null and Start-Process died on a null element in -ArgumentList. $bindRes matches serve.ps1.
+$bindRes = Resolve-MSBind -Bind $bindIn -Port $Port
+if (-not $bindRes -or -not $bindRes.BindHost) { Write-Host 'bind resolution returned no address - see lines above' -ForegroundColor Red; exit 1 }
+$BindHost = $bindRes.BindHost
+$PollHost = $bindRes.PollHost
+$forward += '-Bind', $BindHost
 
 # -WhatIf: reuse serve.ps1's own -DryRun so there is exactly ONE place that knows how the
 # command line is assembled. Reimplementing it here would let the two disagree.
 if ($WhatIf) {
     $dry = @($forward) + @('-DryRun')
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $servePs1 @dry
-    Write-Host ("(would poll http://{0}:{1}/health, log {2})" -f $BindHost, $Port, $outLog)
+    Write-Host ("(would poll http://{0}:{1}/health, log {2})" -f $PollHost, $Port, $outLog)
     exit $LASTEXITCODE
 }
 
@@ -155,7 +169,7 @@ while ((Get-Date) -lt $deadline) {
         Get-Content $outLog, $errLog -Tail 10 | ForEach-Object { Write-Host ('  ' + (Trunc $_ 170)) }
         exit 1
     }
-    $h = Get-MSHealth -Host_ $BindHost -Port $Port
+    $h = Get-MSHealth -Host_ $PollHost -Port $Port
     # Print where it actually is, every poll, with REAL elapsed seconds. A silent wait looks
     # exactly like a hang (it cost two blind timeouts before this line existed), and counting
     # iterations x 3 lied whenever a poll itself took longer than 3 s.
@@ -166,12 +180,16 @@ while ((Get-Date) -lt $deadline) {
         if ($key) { $hdr['Authorization'] = 'Bearer ' + $key.Value }
         $served = ''
         try {
-            $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Headers $hdr -Uri ('http://{0}:{1}/v1/models' -f $BindHost, $Port)
+            $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 -Headers $hdr -Uri ('http://{0}:{1}/v1/models' -f $PollHost, $Port)
             $served = ((ConvertFrom-Json $r.Content).data | ForEach-Object { $_.id }) -join ', '
         } catch { $served = '<unreadable>' }
         Write-Host ("ready: {0}" -f $h)
         Write-Host ("  served as : {0}" -f $served)
-        Write-Host ("  from WSL   : baseUrl http://{0}:{1}/v1" -f $BindHost, $Port)
+        foreach ($f in $bindRes.Faces) { Write-Host ("  " + $f) }
+        if ($bindRes.Hint) {
+            Write-Host '  firewall : LAN clients still need the inbound rule (elevated, once):' -ForegroundColor DarkGray
+            Write-Host ("             " + $bindRes.Hint) -ForegroundColor DarkGray
+        }
         Write-Host '  in pi      : the model entry id must match the booted profile -' -ForegroundColor DarkGray
         Write-Host '               llama.cpp IGNORES the incoming model name, so a mismatch' -ForegroundColor DarkGray
         Write-Host '               lets pi over-declare the context.' -ForegroundColor DarkGray

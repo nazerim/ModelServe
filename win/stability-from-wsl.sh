@@ -38,7 +38,7 @@ if [ -n "${EXTRA_ARGS[*]-}" ]; then echo "extra args: ${EXTRA_ARGS[*]}"; fi
 # Authoritative prompt-processing rate comes from the server's own log, not margin-check's wall
 # time (which includes the generated tokens - its header warns about exactly this).
 SERVER_ERRLOG="${SERVER_ERRLOG:-/mnt/c/ModelServe/logs/server.err.log}"
-printf 'profile\tround\tdesktop_5070Ti_mib\tctx\tsplit\tbatch\tboot_s\tworst_free\tmin_gen_s\tstatus\tcommit_free_gb\thost_ram_free_gb\tbin\tcache\n' > "$OUT"
+printf 'profile\tround\tdesktop_5070Ti_mib\tctx\tsplit\tbatch\tboot_s\tworst_free\tmin_gen_s\tstatus\tcommit_free_gb\thost_ram_free_gb\tbin\tcache\tpin\tkvd\n' > "$OUT"
 
 # ctx/split come from the script's own DRY output - one source of truth, the same trick
 # stability.sh uses with "DRY=1 ./serve.sh". This call is synchronous because it leaves nothing
@@ -54,6 +54,11 @@ bat=$(prof_field "$dry" BATCH)
 bin=$(prof_field "$dry" BIN)
 cache=$(prof_field "$dry" CACHE)
 alias_model=$(prof_field "$dry" ALIAS)
+# The pin and the draft-KV type are recorded for the same reason the batch is: a ceiling means
+# nothing without the configuration that produced it, and both of these now come from the profile
+# rather than from EXTRA, so a row has to say which one actually booted.
+pin=$(prof_field "$dry" PIN)
+kvd=$(prof_field "$dry" KVD)
 # Anchored to serve.ps1's summary line on purpose: the same output also contains a clamp note
 # ("note: CTX=221184 exceeds the ceiling in force (196608)...") and win_run merges the streams, so
 # an unanchored CTX= grep records the REQUESTED size - reproducing "221184 SAFE" for a boot that
@@ -64,7 +69,7 @@ echo "target: $BASE  profile=$PROFILE alias=$alias_model  CTX=$ctx SPLIT=$sp BAT
 for i in $(seq 1 "$N"); do
   # A stop that could not be confirmed means the OLD server is still answering; measuring now
   # would attach this profile's numbers to a boot that is not ours. Skip the round, do not lie.
-  stop_win || { echo "  round $i SKIPPED: previous server did not stop cleanly" ; printf '%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\tSTOPFAIL\t-\t-\t%s\t%s\n' "$PROFILE" "$i" "$ctx" "$sp" "${bat:-?}" "${bin:-?}" "${cache:-?}" >> "$OUT"; continue; }
+  stop_win || { echo "  round $i SKIPPED: previous server did not stop cleanly" ; printf '%s\t%s\t-\t%s\t%s\t%s\t-\t-\t-\tSTOPFAIL\t-\t-\t%s\t%s\t-\t-\n' "$PROFILE" "$i" "$ctx" "$sp" "${bat:-?}" "${bin:-?}" "${cache:-?}" >> "$OUT"; continue; }
   pp=""   # do not carry a previous round's pp into this round's line
   desk=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sed -n 2p | tr -d ' ')
   caps=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits | tr '\n' '/')
@@ -104,8 +109,8 @@ for i in $(seq 1 "$N"); do
   # status is column 10; named positionally on purpose, since a hard-coded $NF broke a whole run's
   # counting once when a column was appended. batch is a column because the repo's own conclusion is
   # that the prompt batch is part of the measurement, not a preference.
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$PROFILE" "$i" "$desk" "$ctx" "$sp" "${bat:-?}" "${boot:-?}" "${worst}" "${slow}" "$st" "${cf:-?}" "${rf:-?}" "${bin:-?}" "${cache:-?}" >> "$OUT"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$PROFILE" "$i" "$desk" "$ctx" "$sp" "${bat:-?}" "${boot:-?}" "${worst}" "${slow}" "$st" "${cf:-?}" "${rf:-?}" "${bin:-?}" "${cache:-?}" "${pin:-?}" "${kvd:-?}" >> "$OUT"
 done
 
 stop_win
