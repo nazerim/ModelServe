@@ -543,11 +543,13 @@ every load, which is why the scheduled task exists. The pair in force is **220 W
 275 W on the 5070 Ti**, safety-tested on the Linux boot; it replaced 150/250, and 275 is near the
 ceiling because the 5070 Ti's `power.min_limit` is 250 and its `max_limit` is 300, so that card
 cannot be capped below 250 W at all. What the task applies at boot is the watts baked into **its
-own arguments** — editing the defaults in `Set-NvidiaPowerLimits.ps1` changes nothing until the
-task is re-registered, and re-registering needs `-Remove` first: registering over an existing name
-fails with HRESULT `0x800700b7`, *Cannot create a file when that file already exists*, because
-`Register-ScheduledTask` is called without `-Force`. Measured on this box (PowerShell 5.1
-Desktop) with a throwaway 2099-dated no-op task rather than inferred, then deleted.
+own arguments** — they are not re-read from `Set-NvidiaPowerLimits.ps1` at boot, so changing the
+defaults in that file changes nothing until the task is re-registered. Re-running
+`install-power-limits.cmd` does that in place, because `Register-ScheduledTask` is called with
+`-Force`; `-Remove` is now only for unhooking the task. Before `-Force` was added, re-running over
+an existing name failed with HRESULT `0x800700b7`, *Cannot create a file when that file already
+exists* — measured on this box with a throwaway 2099-dated no-op task rather than inferred, then
+deleted.
 
 The task was re-registered from `C:\ModelServe\win` on 2026-10-31 16:05 and carries **220 W /
 275 W**: `-Status` cannot prove that from WSL (querying a SYSTEM task unelevated answers *Access
@@ -580,9 +582,9 @@ cmd.exe can't run with a UNC/WSL working directory:
 ```
 C:\ModelServe\win\Set-NvidiaPowerLimits.cmd             # one-shot: apply 220 W / 275 W now
 C:\ModelServe\win\Set-NvidiaPowerLimits.cmd -VerifyOnly # read back, change nothing (no elevation)
-C:\ModelServe\win\install-power-limits.cmd -Remove      # must come first: no -Force on register
-C:\ModelServe\win\install-power-limits.cmd              # re-register the boot task at 220/275
+C:\ModelServe\win\install-power-limits.cmd              # register, or re-register at 220 W / 275 W (in place)
 C:\ModelServe\win\install-power-limits.cmd -Status      # what is in force, + the task's watts
+C:\ModelServe\win\install-power-limits.cmd -Remove      # tear the task down; no longer a first step
 ```
 
 `C:\ModelServe\win` is the working copy these are run from, and the task's action path follows

@@ -15,8 +15,9 @@ rem     C:\ModelServe\win\install-power-limits.cmd        (working copy, run thi
 rem     %ProgramData%\ModelServe\win\install-power-limits.cmd  (the copy the task was registered
 rem     from originally - the task runs whichever folder registration happened in, so sync both)
 rem Pass-through options: -Watts3080 200 -Watts5070Ti 270   |   -Status   |   -Remove
-rem Defaults are 220W / 275W (see Set-NvidiaPowerLimits.ps1). For a one-shot apply that leaves
-rem the task alone, use Set-NvidiaPowerLimits.cmd instead of this file.
+rem Defaults are 220W / 275W (see Set-NvidiaPowerLimits.ps1). Re-running with new watts replaces
+rem the task in place (-Force), so -Remove is only for unhooking it. For a one-shot apply that
+rem leaves the task alone, use Set-NvidiaPowerLimits.cmd instead of this file.
 rem
 rem NOTE: kept deliberately branch-free. A multi-line if/else with parentheses and slashes in
 rem the echo text made cmd try to execute tokens from the message.

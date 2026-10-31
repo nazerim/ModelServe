@@ -11,10 +11,11 @@
       C:\ModelServe\win\install-power-limits.cmd
       ...\install-power-limits.cmd -Status | -Remove | -Watts3080 200 -Watts5070Ti 270
 
-  Re-registering to change the watts needs -Remove FIRST: Register-ScheduledTask is called
-  without -Force, so registering over an existing task name fails with HRESULT 0x800700b7
-  "Cannot create a file when that file already exists" instead of updating it. Measured, not
-  assumed - PowerShell 5.1 Desktop on this box, throwaway no-op task, deleted after.
+  Re-registering to change the watts is a plain re-run: Register-ScheduledTask is called with
+  -Force, so it replaces the existing task in place. -Remove is only for unhooking it entirely.
+  (Before -Force was added, re-running failed with HRESULT 0x800700b7 "Cannot create a file when
+  that file already exists"; measured on PowerShell 5.1 Desktop.) Either way the watts travel in
+  the task's OWN arguments - they are not re-read from Set-NvidiaPowerLimits.ps1 at boot.
 
   Equivalent without the wrapper (Process-scope Bypass outranks LocalMachine):
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Register-NvidiaPowerTask.ps1
@@ -111,8 +112,12 @@ $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minu
             -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 
+# -Force, because a re-register to change the watts must update the task in place. Without it the
+# call dies with HRESULT 0x800700b7 "Cannot create a file when that file already exists" — measured
+# on PowerShell 5.1 Desktop with a throwaway 2099-dated no-op task, not inferred. That failure is
+# what used to make -Remove a mandatory first step.
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Settings $settings -Principal $principal -Description `
+    -Settings $settings -Principal $principal -Force -Description `
     "Applies NVIDIA power limits ($Watts3080 W on the RTX 3080, $Watts5070Ti W on the RTX 5070 Ti) at boot; -pl is volatile and cannot be set from WSL." | Out-Null
 
 "registered: $TaskName"
