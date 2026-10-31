@@ -12,7 +12,9 @@
       ...\install-power-limits.cmd -Status | -Remove | -Watts3080 200 -Watts5070Ti 270
 
   Re-registering to change the watts needs -Remove FIRST: Register-ScheduledTask is called
-  without -Force, so re-running over an existing task fails instead of updating it.
+  without -Force, so registering over an existing task name fails with HRESULT 0x800700b7
+  "Cannot create a file when that file already exists" instead of updating it. Measured, not
+  assumed - PowerShell 5.1 Desktop on this box, throwaway no-op task, deleted after.
 
   Equivalent without the wrapper (Process-scope Bypass outranks LocalMachine):
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Register-NvidiaPowerTask.ps1

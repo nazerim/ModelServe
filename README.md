@@ -544,10 +544,18 @@ every load, which is why the scheduled task exists. The pair in force is **220 W
 ceiling because the 5070 Ti's `power.min_limit` is 250 and its `max_limit` is 300, so that card
 cannot be capped below 250 W at all. What the task applies at boot is the watts baked into **its
 own arguments** — editing the defaults in `Set-NvidiaPowerLimits.ps1` changes nothing until the
-task is re-registered. Whether it currently carries 220/275 is not readable from WSL (querying a
-SYSTEM task unelevated answers *Access is denied*, which is why `-Status` distinguishes that from
-"cannot find the file specified"); the last recorded boot run applied 250 W to the 3080, so
-confirm elevated with `-Status` and re-register if it does not read 220/275. An earlier version
+task is re-registered, and re-registering needs `-Remove` first: registering over an existing name
+fails with HRESULT `0x800700b7`, *Cannot create a file when that file already exists*, because
+`Register-ScheduledTask` is called without `-Force`. Measured on this box (PowerShell 5.1
+Desktop) with a throwaway 2099-dated no-op task rather than inferred, then deleted.
+
+The task was re-registered from `C:\ModelServe\win` on 2026-10-31 16:05 and carries **220 W /
+275 W**: `-Status` cannot prove that from WSL (querying a SYSTEM task unelevated answers *Access
+is denied*, which is why `-Status` distinguishes that from *cannot find the file specified*), but
+the registration line prints the very variables it bakes into the task action — `3080 -> 220W
+5070 Ti -> 275W` — and the verification run it starts wrote `attempt 1 : ... already at 220W` /
+`... 275W` → `DONE` to the log. What is still **not** proven is a real reboot: the driver
+restores 340/300 when it loads, and only the boot task pulls it back. An earlier version
 of this section claimed the limits had survived a reboot *without* the task and called it
 driver-specific luck — that was wrong, and its cause is worth recording: `-Status` used
 `Get-ScheduledTask -ErrorAction SilentlyContinue`, and a SYSTEM task is not readable by a
@@ -577,9 +585,9 @@ C:\ModelServe\win\install-power-limits.cmd              # re-register the boot t
 C:\ModelServe\win\install-power-limits.cmd -Status      # what is in force, + the task's watts
 ```
 
-`C:\ModelServe\win` is the working copy these are run from. `%ProgramData%\ModelServe\win` holds
-the copy the boot task was originally pointed at, so keep the two in step — the task runs the copy
-it was registered from, and its watts travel in its own arguments. The four power files
+`C:\ModelServe\win` is the working copy these are run from, and the task's action path follows
+whichever folder registration happened in — so re-registering from `%ProgramData%\ModelServe\win`
+would move it back there. The four power files
 (Set-NvidiaPowerLimits.cmd / .ps1, Register-NvidiaPowerTask.ps1, install-power-limits.cmd) are
 identical across the WSL tree and both Windows copies, verified with `cmp`; the two `.md` docs in
 `C:\ModelServe\win` drift behind the repo, as they did before this change. `Set-NvidiaPowerLimits.cmd`
