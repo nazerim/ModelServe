@@ -291,7 +291,7 @@ at 12/16384 restored the two entries written at 9/20480 with no sweep).
   **not** apply to current master at all — it is stale, not in conflict with 28092 — and the disk
   path does not need it.
 * CUDA 13.4 + MSVC 14.44. The toolkit cannot touch the driver: NVIDIA stopped bundling the Windows
-  driver in 13.1, so the 150 W cap and the TDR values on the 3080 stay put.
+  driver in 13.1, so the 220 W cap and the TDR values on the 3080 stay put.
 * Use `-G "Ninja Multi-Config"`. The Visual Studio generator routes CUDA compiles through MSBuild's
   `CUDA 13.4.targets` and dies with *The CUDA Toolkit directory '' does not exist*.
 * Pin the archs **and** the compiler. Both GPUs need kernels (`86` for the 3080, `120a` for the

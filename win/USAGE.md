@@ -226,7 +226,8 @@ that matter belong in prose, not only in a TSV.
 
 ## Also available
 
-    install-power-limits.cmd            150W / 250W, re-applied at boot by a SYSTEM task
+    Set-NvidiaPowerLimits.cmd           one-shot 220W / 275W apply; dies at a driver reload, changes nothing persistent
+    install-power-limits.cmd            220W / 275W, re-applied at boot by a SYSTEM task
     install-power-limits.cmd -Status    read back what is in force
     install-windows.cmd -Firewall       elevated; scoped inbound allow for the WSL /20 only
     install-windows.cmd -RegisterTask   elevated; start the server at logon (off by default)

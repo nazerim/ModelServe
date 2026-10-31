@@ -8,8 +8,11 @@
 
   Usage, ONE TIME. Prefer the .cmd wrapper - this box is AllSigned at LocalMachine scope,
   so a bare .\script.ps1 is refused, while cmd.exe is not subject to ExecutionPolicy:
-      C:\ProgramData\ModelServe\win\install-power-limits.cmd
-      ...\install-power-limits.cmd -Status | -Remove | -Watts3080 170 -Watts5070Ti 260
+      C:\ModelServe\win\install-power-limits.cmd
+      ...\install-power-limits.cmd -Status | -Remove | -Watts3080 200 -Watts5070Ti 270
+
+  Re-registering to change the watts needs -Remove FIRST: Register-ScheduledTask is called
+  without -Force, so re-running over an existing task fails instead of updating it.
 
   Equivalent without the wrapper (Process-scope Bypass outranks LocalMachine):
       powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Register-NvidiaPowerTask.ps1
@@ -19,8 +22,8 @@
 #>
 [CmdletBinding()]
 param(
-    [int]$Watts3080   = 150,
-    [int]$Watts5070Ti = 250,
+    [int]$Watts3080   = 220,
+    [int]$Watts5070Ti = 275,
     [string]$TaskName = 'ModelServe NVIDIA Power Limits',
     [switch]$Remove,
     [switch]$Status

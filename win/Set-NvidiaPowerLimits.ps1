@@ -9,15 +9,22 @@
   Also handles the real boot race: nvidia-smi can answer before the power-management layer is
   ready, so it retries until the applied values read back correctly.
 
+  Prefer the .cmd wrapper - this box is AllSigned at LocalMachine scope, so a bare .ps1 is
+  refused while cmd.exe is not subject to ExecutionPolicy:
+      .\Set-NvidiaPowerLimits.cmd            :: one-shot, no persistence past a driver reload
+
   Usage (elevated PowerShell):
-      .\Set-NvidiaPowerLimits.ps1                       # defaults 150W RTX 3080 / 250W 5070 Ti
+      .\Set-NvidiaPowerLimits.ps1                       # defaults 220W RTX 3080 / 275W 5070 Ti
       .\Set-NvidiaPowerLimits.ps1 -VerifyOnly           # read back, change nothing
-      .\Set-NvidiaPowerLimits.ps1 -Watts3080 170 -Watts5070Ti 260
+      .\Set-NvidiaPowerLimits.ps1 -Watts3080 200 -Watts5070Ti 270
+
+  Settable bounds on this box (power.min_limit / max_limit): 3080 100-374 W, 5070 Ti 250-300 W.
+  The 5070 Ti cannot be capped below 250 W at all.
 #>
 [CmdletBinding()]
 param(
-    [int]$Watts3080   = 150,
-    [int]$Watts5070Ti = 250,
+    [int]$Watts3080   = 220,
+    [int]$Watts5070Ti = 275,
     [int]$Retries     = 12,
     [int]$DelaySec    = 10,
     [switch]$VerifyOnly

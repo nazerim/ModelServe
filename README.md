@@ -539,8 +539,15 @@ and every apparent drift was the display GPU's desktop usage changing between me
 ## Persisting the power limits (`-pl` has no persistence; the boot task does it)
 
 `nvidia-smi -pl` has **no persistence** — the driver restores defaults (340 W / 300 W) on
-every load, which is why the scheduled task exists. It is installed and working on this box:
-limits read 150 W / 250 W at `uptime 1 min`, applied by the task at boot. An earlier version
+every load, which is why the scheduled task exists. The pair in force is **220 W on the 3080 /
+275 W on the 5070 Ti**, safety-tested on the Linux boot; it replaced 150/250, and 275 is near the
+ceiling because the 5070 Ti's `power.min_limit` is 250 and its `max_limit` is 300, so that card
+cannot be capped below 250 W at all. What the task applies at boot is the watts baked into **its
+own arguments** — editing the defaults in `Set-NvidiaPowerLimits.ps1` changes nothing until the
+task is re-registered. Whether it currently carries 220/275 is not readable from WSL (querying a
+SYSTEM task unelevated answers *Access is denied*, which is why `-Status` distinguishes that from
+"cannot find the file specified"); the last recorded boot run applied 250 W to the 3080, so
+confirm elevated with `-Status` and re-register if it does not read 220/275. An earlier version
 of this section claimed the limits had survived a reboot *without* the task and called it
 driver-specific luck — that was wrong, and its cause is worth recording: `-Status` used
 `Get-ScheduledTask -ErrorAction SilentlyContinue`, and a SYSTEM task is not readable by a
@@ -563,11 +570,21 @@ One-time setup, from an **elevated** prompt (a SYSTEM task requires admin). Use 
 cmd.exe can't run with a UNC/WSL working directory:
 
 ```
-C:\ProgramData\ModelServe\win\install-power-limits.cmd            # 150W 3080 / 250W 5070 Ti
-C:\ProgramData\ModelServe\win\install-power-limits.cmd -Status
-C:\ProgramData\ModelServe\win\install-power-limits.cmd -Remove
-C:\ProgramData\ModelServe\win\install-power-limits.cmd -Watts3080 170 -Watts5070Ti 260
+C:\ModelServe\win\Set-NvidiaPowerLimits.cmd             # one-shot: apply 220 W / 275 W now
+C:\ModelServe\win\Set-NvidiaPowerLimits.cmd -VerifyOnly # read back, change nothing (no elevation)
+C:\ModelServe\win\install-power-limits.cmd -Remove      # must come first: no -Force on register
+C:\ModelServe\win\install-power-limits.cmd              # re-register the boot task at 220/275
+C:\ModelServe\win\install-power-limits.cmd -Status      # what is in force, + the task's watts
 ```
+
+`C:\ModelServe\win` is the working copy these are run from. `%ProgramData%\ModelServe\win` holds
+the copy the boot task was originally pointed at, so keep the two in step — the task runs the copy
+it was registered from, and its watts travel in its own arguments. The four power files
+(Set-NvidiaPowerLimits.cmd / .ps1, Register-NvidiaPowerTask.ps1, install-power-limits.cmd) are
+identical across the WSL tree and both Windows copies, verified with `cmp`; the two `.md` docs in
+`C:\ModelServe\win` drift behind the repo, as they did before this change. `Set-NvidiaPowerLimits.cmd`
+exists because AllSigned refuses a bare `.ps1` — and because a one-shot apply needs an entry point
+that does not also rewrite the task.
 
 If the `win\` folder isn't there yet, copy it out of WSL first (elevated PowerShell):
 
@@ -590,8 +607,10 @@ the task calls `Set-NvidiaPowerLimits.ps1`, which:
   success against nothing;
 - logs to `%ProgramData%\ModelServe\power-limits.log`.
 
-Verified on this machine in read-only mode: `attempt 1 : NVIDIA GeForce RTX 3080 [idx 0] already
-at 150W (default 340W)` / `RTX 5070 Ti ... already at 250W (default 300W)` → `DONE`, exit 0.
+Verified on this machine in read-only mode, through the .cmd wrapper: `attempt 1 : NVIDIA GeForce
+RTX 3080 [idx 0] already at 220W (default 340W)` / `RTX 5070 Ti ... already at 275W (default
+300W)` → `DONE`, exit 0. The wrapper resolves the setter through its own folder, so it runs from
+either tree and from a UNC path (cmd's cwd falls back to the Windows directory; `%~dp0` does not).
 
 After your next reboot, confirm with
 `nvidia-smi --query-gpu=name,power.limit,power.default_limit --format=csv`.

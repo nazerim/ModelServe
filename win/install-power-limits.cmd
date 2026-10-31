@@ -11,8 +11,12 @@ rem break the per-boot re-apply either.
 rem
 rem Run from an ELEVATED prompt (creating a SYSTEM task requires admin). Copy this whole
 rem folder to a local disk first - cmd.exe cannot run with a UNC/WSL working directory:
-rem     C:\ProgramData\ModelServe\win\install-power-limits.cmd
-rem Pass-through options: -Watts3080 170 -Watts5070Ti 260   |   -Status   |   -Remove
+rem     C:\ModelServe\win\install-power-limits.cmd        (working copy, run this one)
+rem     %ProgramData%\ModelServe\win\install-power-limits.cmd  (the copy the task was registered
+rem     from originally - the task runs whichever folder registration happened in, so sync both)
+rem Pass-through options: -Watts3080 200 -Watts5070Ti 270   |   -Status   |   -Remove
+rem Defaults are 220W / 275W (see Set-NvidiaPowerLimits.ps1). For a one-shot apply that leaves
+rem the task alone, use Set-NvidiaPowerLimits.cmd instead of this file.
 rem
 rem NOTE: kept deliberately branch-free. A multi-line if/else with parentheses and slashes in
 rem the echo text made cmd try to execute tokens from the message.
